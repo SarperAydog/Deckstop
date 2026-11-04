@@ -4,6 +4,7 @@
 // and an early block prunes everything behind it. The result goes into a 3D texture
 // that anything can sample: the land, the houses, the ship, a buoy.
 import * as THREE from 'three';
+import { CHART_HALF } from '../sim/world.js';
 
 const CX = 1.25;
 const CY = 1;
@@ -13,11 +14,11 @@ const Y0 = -2;
 export class VoxelField {
   constructor(world) {
     this.world = world;
-    this.nx = Math.round(world.size / CX);
+    this.nx = Math.round((CHART_HALF * 2) / CX);
     this.nz = this.nx;
     this.ny = NY;
-    this.x0 = -world.half;
-    this.z0 = -world.half;
+    this.x0 = -CHART_HALF;
+    this.z0 = -CHART_HALF;
     this.occ = new Uint8Array(this.nx * this.nz * NY);
     const { nx, nz } = this;
     for (let z = 0; z < nz; z++) {

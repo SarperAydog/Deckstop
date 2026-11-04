@@ -108,14 +108,17 @@ function distSegment(x, z, ax, az, bx, bz) {
   return Math.hypot(x - ax - dx * t, z - az - dz * t);
 }
 
+// Half the width of the charted, sailable waters. The world itself runs on beyond them.
+export const CHART_HALF = 320;
+
 // Town footprint: everything inside is levelled for building on.
 export const TOWN = { x0: -34, x1: 42, z0: -9, z1: 42 };
 
 // Where the coast runs: x, then z. It climbs north up the west side, passes the town,
 // and falls away south just east of it, so land only holds the south-west corner.
 const COAST = [
-  [-360, -420], [-320, -325], [-280, -250], [-240, -155], [-200, -100], [-160, -60], [-110, -28], [-70, -9], [-44, -3],
-  [42, -3], [62, 3], [90, 34], [130, 90], [190, 170], [260, 260], [360, 400],
+  [-620, -860], [-470, -600], [-360, -420], [-320, -325], [-280, -250], [-240, -155], [-200, -100], [-160, -60], [-110, -28], [-70, -9], [-44, -3],
+  [42, -3], [62, 3], [90, 34], [130, 90], [190, 170], [260, 260], [360, 400], [480, 560], [620, 760],
 ];
 
 function coastLine(x) {
@@ -162,7 +165,7 @@ export function generateWorld(seed) {
   // Offshore: a few rocky skerries and big flat sheets of ice to steer around.
   const features = [];
   const clearOf = (x, z, r) => {
-    if (Math.abs(x) > half - 30 || Math.abs(z) > half - 30) return false;
+    if (Math.abs(x) > CHART_HALF - 30 || Math.abs(z) > CHART_HALF - 30) return false;
     if (Math.hypot(x - 6, z + 18) < 62 + r) return false;
     if (landField(x, z, seed) > -22 - r) return false;
     return features.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + r + 16);
@@ -170,8 +173,8 @@ export function generateWorld(seed) {
   const scatter = (count, kind, rMin, rMax) => {
     for (let i = 0; i < count; i++) {
       for (let t = 0; t < 25; t++) {
-        const x = (rand() - 0.5) * size;
-        const z = -half + rand() * size;
+        const x = (rand() - 0.5) * CHART_HALF * 2;
+        const z = -CHART_HALF + rand() * CHART_HALF * 2;
         const r = rMin + rand() * (rMax - rMin);
         if (clearOf(x, z, r)) {
           features.push({ kind, x, z, r, s: Math.floor(rand() * 1e6) });
@@ -338,7 +341,7 @@ export function generateWorld(seed) {
     navDistance,
     heightAt,
     // Where the ship may sail. North of the mesh there is only open sea.
-    bounds: { x0: -half + 6, x1: half - 6, z0: -595, z1: 34 },
+    bounds: { x0: -CHART_HALF + 6, x1: CHART_HALF - 6, z0: -595, z1: 34 },
     port,
   };
 }

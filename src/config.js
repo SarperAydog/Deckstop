@@ -1,6 +1,6 @@
 // All balance numbers live here so tuning never means hunting through systems.
 export const CFG = {
-  worldSize: 640,
+  worldSize: 1100, // far past the charted 640, so the camera never finds an edge
   meshStep: 3,
   sdfCell: 0.8,
   sdfMax: 24,

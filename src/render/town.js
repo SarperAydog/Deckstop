@@ -524,7 +524,7 @@ export function buildTown(world, field) {
   });
 
   // The wild coast: forest stands and rocks wherever the noise allows.
-  const { half } = world;
+  const half = 500; // trees and rocks carry on past the chart's edge
   const step = 7;
   let wildTrees = 0;
   let wildRocks = 0;
@@ -543,13 +543,13 @@ export function buildTown(world, field) {
       const slope = Math.abs(world.heightAt(x + 2, z) - world.heightAt(x - 2, z)) + Math.abs(world.heightAt(x, z + 2) - world.heightAt(x, z - 2));
       const roll = h1(x, z);
       const woods = fbm(x * 0.03, z * 0.03, world.seed + 51, 2);
-      if (woods > 0.55 && slope < 3.2 && y < 18 && wildTrees < 1300) {
+      if (woods > 0.55 && slope < 3.2 && y < 18 && wildTrees < 2200) {
         const c = 1 + Math.floor(roll * 3);
         for (let i = 0; i < c; i++) {
           treeAt(x + (h1(i, x) - 0.5) * 5, z + (h1(z, i) - 0.5) * 5, 0.95 + h1(x, i) * 0.65, (i + wildTrees) % 4);
           wildTrees++;
         }
-      } else if ((slope > 3.4 || roll > 0.92) && wildRocks < 620) {
+      } else if ((slope > 3.4 || roll > 0.92) && wildRocks < 1000) {
         const r = 0.8 + roll * 1.3 + Math.min(1, slope * 0.1);
         props.push(place(rock(r, wildRocks), x, y + r * 0.1, z, roll * 6));
         field.addBox(x - r, x + r, y, y + r, z - r, z + r, 0.75);

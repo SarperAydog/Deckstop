@@ -287,7 +287,7 @@ const SWELL_DIR = (() => {
 })();
 
 function waveFieldTexture(world) {
-  const n = 320;
+  const n = Math.round(world.size / 2);
   const cell = world.size / n;
   const sstep = (a, b, v) => {
     const t = Math.min(1, Math.max(0, (v - a) / (b - a)));

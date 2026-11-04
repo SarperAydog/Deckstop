@@ -228,7 +228,8 @@ export class DebugPanel {
       for (let a = 0; a < 6.28; a += 0.26) {
         const x = ship.x + Math.sin(a) * r;
         const z = ship.z - Math.cos(a) * r;
-        if (Math.abs(x) < world.half - 20 && Math.abs(z) < world.half - 20 && world.shoreDistance(x, z) > 20) return { x, z };
+        const b = world.bounds;
+        if (x > b.x0 + 14 && x < b.x1 - 14 && z > b.z0 + 14 && z < b.z1 - 14 && world.shoreDistance(x, z) > 20) return { x, z };
       }
     }
     return { x: 40, z: -120 };

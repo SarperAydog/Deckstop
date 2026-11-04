@@ -51,6 +51,8 @@ const FRAG_BODY = /* glsl */ `
     vec3 voxP = (vMistPos + vWorldN * 0.8 - uVoxMin) / uVoxSize;
     float ao = texture(uVox, voxP.xzy).r;
     ao = smoothstep(0.08, 0.92, ao);
+    vec2 voxEdge = abs(voxP.xz - 0.5) * 2.0;
+    ao = mix(ao, 1.0, smoothstep(0.96, 1.0, max(voxEdge.x, voxEdge.y)));
     gl_FragColor.rgb *= mix(uAoTint, vec3(1.0), ao);
     gl_FragColor.rgb = mix(gl_FragColor.rgb, uMistColor,
       smoothstep(uMistNear, uMistFar, distance(vMistPos.xz, uFocus)) * uMistAmount);

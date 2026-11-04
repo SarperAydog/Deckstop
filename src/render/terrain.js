@@ -66,11 +66,11 @@ export function buildTerrainGeometry(world) {
     }
   }
 
-  const pos = [];
-  const col = [];
-  const att = [];
-  const tones = [];
+  const chunks = new Map();
   const tri = (a, b, c, i, j, v) => {
+    const key = `${Math.floor(i / 36)},${Math.floor(j / 36)}`;
+    if (!chunks.has(key)) chunks.set(key, { pos: [], col: [], att: [], tones: [] });
+    const { pos, col, att, tones } = chunks.get(key);
     pos.push(px[a], py[a], pz[a], px[b], py[b], pz[b], px[c], py[c], pz[c]);
     att.push(snow[a], snow[b], snow[c]);
     // A small tone shift per facet: enough to read as planes, never as noise.
@@ -100,13 +100,16 @@ export function buildTerrainGeometry(world) {
       }
     }
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  g.setAttribute('aSnow', new THREE.Float32BufferAttribute(att, 1));
-  g.setAttribute('aTone', new THREE.Float32BufferAttribute(tones, 1));
-  g.computeVertexNormals();
-  return g;
+  return [...chunks.values()].map(({ pos, col, att, tones }) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setAttribute('aSnow', new THREE.Float32BufferAttribute(att, 1));
+    g.setAttribute('aTone', new THREE.Float32BufferAttribute(tones, 1));
+    g.computeVertexNormals();
+    g.computeBoundingSphere();
+    return g;
+  });
 }
 
 // Loose floes small enough for the ship to shoulder aside.

@@ -111,12 +111,14 @@ export class View {
     const propMat = stylize(new THREE.MeshLambertMaterial({ vertexColors: true }));
     this.outlineMat = outlineMaterial();
     this.mirrorMat = mirrorMaterial();
-    const terrainGeo = buildTerrainGeometry(world);
-    const terrain = new THREE.Mesh(terrainGeo, terrainMaterial());
-    terrain.frustumCulled = false;
-    terrain.receiveShadow = true;
-    terrain.castShadow = true;
-    this.scene.add(terrain);
+    const terrainGeos = buildTerrainGeometry(world);
+    const groundMat = terrainMaterial();
+    for (const g of terrainGeos) {
+      const ground = new THREE.Mesh(g, groundMat);
+      ground.receiveShadow = true;
+      ground.castShadow = true;
+      this.scene.add(ground);
+    }
     this.outlines = new THREE.Group();
     const chunks = [...town.props, ...town.trees];
     for (const g of chunks) {
@@ -132,12 +134,7 @@ export class View {
     this.mirrorScene = new THREE.Scene();
     this.mirrorRoot = new THREE.Group();
     this.mirrorRoot.scale.y = -1;
-    {
-      const mm = new THREE.Mesh(terrainGeo, this.mirrorMat);
-      mm.frustumCulled = false;
-      this.mirrorRoot.add(mm);
-    }
-    for (const g of chunks) this.mirrorRoot.add(new THREE.Mesh(g, this.mirrorMat));
+    for (const g of [...terrainGeos, ...chunks]) this.mirrorRoot.add(new THREE.Mesh(g, this.mirrorMat));
     this.mirrorScene.add(this.mirrorRoot);
     this.mirrorTarget = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: true });
 
@@ -367,7 +364,7 @@ export class View {
     this.shipWake.update(dt, shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, game.topSpeed);
     this.floes.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, dt, t);
     this.gulls.update(t, dt, -2, -6, shipRoot.position.x, shipRoot.position.z);
-    this.life.update(t, dt, shipRoot, sp, s.ship.docked, game);
+    this.life.update(t, dt, shipRoot, sp, s.ship.docked, game, this.renderer.domElement.height / (2 * halfH), this.focus);
     this.flecks.update(dt);
     this.rain.update(this.focus.x, this.focus.z, reach, w.storm + w.overcast * 0.08, t);
     this.snow.update(this.focus.x, this.focus.z, reach, this.settings.snow ? Math.max(0, 0.75 - w.storm * 1.5) : 0, t);

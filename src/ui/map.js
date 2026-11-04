@@ -1,6 +1,7 @@
 // The chart: a nautical map of the coast where you manage every cage in the water,
 // plot a waypoint for yourself, and chain orders for a hired captain.
 import { CFG } from '../config.js';
+import { CHART_HALF } from '../sim/world.js';
 import { ICON } from './dash.js';
 
 const LABEL = { go: 'Sail to', drop: 'Drop cage', collect: 'Collect cage', port: 'Return to port' };
@@ -159,15 +160,15 @@ export class MapPanel {
   // North is always straight up. The frame is a square that fits the charted sea
   // exactly, edge to edge, with the mainland along the bottom.
   get pxPerUnit() {
-    return (S * this.zoom) / this.world.size;
+    return (S * this.zoom) / (CHART_HALF * 2);
   }
   get seaFrame() {
-    return { x: 0, z: this.world.bounds.z0 - 5 + this.world.size / 2, zoom: 1 };
+    return { x: 0, z: this.world.bounds.z0 - 5 + CHART_HALF, zoom: 1 };
   }
   clampView() {
     const f = this.seaFrame;
     this.zoom = Math.max(f.zoom, Math.min(f.zoom * 5, this.zoom));
-    const lim = (this.world.size / 2) * (1 - 1 / this.zoom);
+    const lim = CHART_HALF * (1 - 1 / this.zoom);
     this.cx = Math.max(f.x - lim, Math.min(f.x + lim, this.cx));
     this.cz = Math.max(f.z - lim, Math.min(f.z + lim, this.cz));
   }

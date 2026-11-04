@@ -437,22 +437,69 @@ export class ShipWake {
   }
 }
 
+const SMOKE_VERT = /* glsl */ `
+  attribute float aSize;
+  attribute float aAlpha;
+  attribute float aSeed;
+  uniform float uScale;
+  varying float vAlpha;
+  varying float vSeed;
+  void main() {
+    vAlpha = aAlpha;
+    vSeed = aSeed;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = aSize * uScale;
+  }
+`;
+const SMOKE_FRAG = /* glsl */ `
+  precision highp float;
+  varying float vAlpha;
+  varying float vSeed;
+  void main() {
+    vec2 p = gl_PointCoord - 0.5;
+    float r = length(p) * 2.0;
+    // A soft ball, with a slow irregular edge so that puffs never read as discs.
+    float a = atan(p.y, p.x);
+    float edge = 0.78 + 0.16 * sin(a * 3.0 + vSeed) + 0.06 * sin(a * 7.0 - vSeed * 1.7);
+    float soft = 1.0 - smoothstep(0.0, edge, r);
+    gl_FragColor = vec4(vec3(0.96, 0.97, 0.98), soft * soft * vAlpha);
+    #include <colorspace_fragment>
+  }
+`;
+
 // Small signs of life: smoke rising from the town, and the ship's mooring lines.
 export class TownLife {
   constructor(scene, material, smokes, world) {
     this.smokes = smokes;
     this.world = world;
-    // Smoke: pale low-poly puffs, from chimneys and the ship's stack.
-    const puff = new THREE.IcosahedronGeometry(1, 0);
-    puff.setAttribute('color', new THREE.BufferAttribute(new Float32Array(puff.attributes.position.count * 3).fill(0.93), 3));
-    this.puffs = Array.from({ length: 150 }, () => ({ life: 0 }));
+    // Smoke: many faint, soft-edged puffs. None is visible alone; they add up to a
+    // plume that thins and spreads as it rises and leans away with the wind.
+    this.maxPuffs = 700;
+    this.puffs = Array.from({ length: this.maxPuffs }, () => ({ life: 0 }));
     this.head = 0;
-    this.puffMesh = new THREE.InstancedMesh(puff, material, this.puffs.length);
+    const geo = new THREE.BufferGeometry();
+    const attr = (name, size) => {
+      const a = new THREE.BufferAttribute(new Float32Array(this.maxPuffs * size), size);
+      a.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute(name, a);
+      return a;
+    };
+    this.pPos = attr('position', 3);
+    this.pSize = attr('aSize', 1);
+    this.pAlpha = attr('aAlpha', 1);
+    this.pSeed = attr('aSeed', 1);
+    geo.setDrawRange(0, 0);
+    this.puffMat = new THREE.ShaderMaterial({
+      vertexShader: SMOKE_VERT,
+      fragmentShader: SMOKE_FRAG,
+      uniforms: { uScale: { value: 1 } },
+      transparent: true,
+      depthWrite: false,
+    });
+    this.puffMesh = new THREE.Points(geo, this.puffMat);
     this.puffMesh.frustumCulled = false;
-    this.puffMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.puffMesh.count = 0;
     scene.add(this.puffMesh);
-    this.timers = smokes.map((_, i) => i * 0.37);
+    this.timers = smokes.map((_, i) => i * 0.13);
     this.shipTimer = 0;
 
     // Mooring lines, shown while she is alongside.
@@ -466,49 +513,67 @@ export class TownLife {
 
   spawn(x, y, z, size, rise, dark) {
     const p = this.puffs[this.head];
-    this.head = (this.head + 1) % this.puffs.length;
-    Object.assign(p, { x, y, z, size, rise, life: 1, max: 3.4 + Math.random() * 1.6, ry: Math.random() * 6, dark });
+    this.head = (this.head + 1) % this.maxPuffs;
+    const a = Math.random() * 6.283;
+    const off = size * 0.5 * Math.random();
+    Object.assign(p, {
+      x: x + Math.cos(a) * off,
+      y,
+      z: z + Math.sin(a) * off,
+      size,
+      rise: rise * (0.8 + Math.random() * 0.4),
+      life: 1,
+      max: 5 + Math.random() * 3,
+      seed: Math.random() * 100,
+      dark,
+      vx: (Math.random() - 0.5) * 0.1,
+      vz: (Math.random() - 0.5) * 0.1,
+    });
   }
 
-  update(time, dt, ship, speed, docked, game) {
-    // Chimneys breathe out slowly; the stack works harder the faster she goes.
+  update(time, dt, ship, speed, docked, game, pxPerUnit, focus) {
+    // Chimneys trickle steadily, and only those near enough to be seen.
     this.smokes.forEach((c, i) => {
       this.timers[i] -= dt;
-      if (this.timers[i] <= 0) {
-        this.timers[i] = 0.95 + (i % 4) * 0.2;
-        this.spawn(c.x, c.y, c.z, 0.2, 0.55, false);
-      }
+      if (this.timers[i] > 0) return;
+      this.timers[i] = 0.28 + Math.random() * 0.2;
+      if (Math.abs(c.x - focus.x) < 120 && Math.abs(c.z - focus.z) < 120) this.spawn(c.x, c.y, c.z, 0.34, 0.42, false);
     });
+    // The stack works harder the faster she goes.
     const u = ship.userData;
     const k = u.length / 8;
     const fx = Math.sin(ship.rotation.y);
     const fz = Math.cos(ship.rotation.y);
     const pace = Math.abs(speed);
     this.shipTimer -= dt;
-    if (this.shipTimer <= 0 && !docked) {
-      this.shipTimer = Math.max(0.16, 0.7 - pace * 0.07);
-      const back = 0.1 * u.length - 0.25 * u.length * 0.62;
-      const side = u.beam * 0.14;
-      this.spawn(ship.position.x + fx * back + fz * side, 0.98 * k + 0.82 * k * 0.86 + 0.6 * k, ship.position.z + fz * back - fx * side, (0.11 + pace * 0.012) * k, 0.8, true);
+    if (this.shipTimer <= 0 && u.stack) {
+      this.shipTimer = Math.max(0.05, 0.3 - pace * 0.03);
+      const { x, y, z } = u.stack;
+      this.spawn(ship.position.x + fz * x + fx * z, y + 0.05, ship.position.z - fx * x + fz * z, 0.26 + pace * 0.025, 0.55 + pace * 0.03, true);
     }
-    const o = TownLife.dummy;
+    this.puffMat.uniforms.uScale.value = pxPerUnit;
     let live = 0;
     for (const p of this.puffs) {
       if (p.life <= 0) continue;
       p.life -= dt / p.max;
       if (p.life <= 0) continue;
       const age = 1 - p.life;
-      p.y += p.rise * dt * (1 - age * 0.5);
-      p.x += dt * 0.32;
-      p.z += dt * 0.12;
-      o.position.set(p.x, p.y, p.z);
-      o.rotation.set(age * 2, p.ry + age, 0);
-      o.scale.setScalar(p.size * (1 + age * 2.4) * Math.min(1, p.life * 3));
-      o.updateMatrix();
-      this.puffMesh.setMatrixAt(live++, o.matrix);
+      // Rising slows; a light wind and slow eddies carry it off.
+      p.y += p.rise * dt * (1 - age * 0.72);
+      p.x += (p.vx + 0.2 + age * 0.22 + Math.sin(time * 0.6 + p.seed) * 0.1) * dt;
+      p.z += (p.vz + 0.09 + age * 0.1 + Math.cos(time * 0.47 + p.seed * 1.3) * 0.1) * dt;
+      this.pPos.setXYZ(live, p.x, p.y, p.z);
+      this.pSize.setX(live, p.size * (1 + age * 5.5));
+      const fadeIn = Math.min(1, age * 7);
+      this.pAlpha.setX(live, fadeIn * (1 - age) ** 1.7 * (p.dark ? 0.2 : 0.14));
+      this.pSeed.setX(live, p.seed);
+      live++;
     }
-    this.puffMesh.count = live;
-    this.puffMesh.instanceMatrix.needsUpdate = true;
+    this.puffMesh.geometry.setDrawRange(0, live);
+    this.pPos.needsUpdate = true;
+    this.pSize.needsUpdate = true;
+    this.pAlpha.needsUpdate = true;
+    this.pSeed.needsUpdate = true;
 
     // Bow and stern lines to the pier bollards.
     this.lines.visible = docked;

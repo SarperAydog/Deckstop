@@ -14,23 +14,36 @@ const shade = (hex, k) => {
   return `#${c.getHexString()}`;
 };
 
+// Hull lines, from stern to stem: [z fraction, half beam fraction, keel, sheer].
+const HULL = [
+  [-0.5, 0.78, 0.14, 1.08],
+  [-0.46, 0.88, 0.0, 1.05],
+  [-0.36, 0.97, -0.16, 1.0],
+  [-0.16, 1, -0.3, 0.98],
+  [0.08, 0.99, -0.3, 1.0],
+  [0.22, 0.91, -0.26, 1.08],
+  [0.33, 0.73, -0.14, 1.26],
+  [0.42, 0.47, 0.02, 1.48],
+  [0.49, 0.2, 0.26, 1.7],
+  [0.53, 0.02, 0.56, 1.88],
+];
+const DECK_DROP = 0.2; // how far the deck sits below the top of the bulwark
+
+function hullAt(zf, col) {
+  for (let i = 0; i < HULL.length - 1; i++) {
+    const a = HULL[i];
+    const b = HULL[i + 1];
+    if (zf > b[0]) continue;
+    const t = Math.max(0, (zf - a[0]) / (b[0] - a[0]));
+    return a[col] + (b[col] - a[col]) * t;
+  }
+  return HULL[HULL.length - 1][col];
+}
+
 function hullGeometry(L, B, hull, stripe, deck) {
-  // Lofted from stations along Z: [z fraction, half beam fraction, keel, deck]
-  const st = [
-    [-0.5, 0.78, 0.14, 1.08],
-    [-0.46, 0.88, 0.0, 1.05],
-    [-0.36, 0.97, -0.16, 1.0],
-    [-0.16, 1, -0.3, 0.98],
-    [0.08, 0.99, -0.3, 1.0],
-    [0.22, 0.91, -0.26, 1.08],
-    [0.33, 0.73, -0.14, 1.26],
-    [0.42, 0.47, 0.02, 1.48],
-    [0.49, 0.2, 0.26, 1.7],
-    [0.53, 0.02, 0.56, 1.88],
-  ];
   const k = L / 8;
-  const stations = st.map(([z, w, kl, d]) => [z * L, (w * B) / 2, kl * k, d * k]);
-  const parts = { foul: [], side: [], rub: [], band: [], top: [], inner: [] };
+  const stations = HULL.map(([z, w, kl, d]) => [z * L, (w * B) / 2, kl * k, d * k]);
+  const parts = { foul: [], side: [], rub: [], band: [], top: [], inner: [], floor: [] };
   const q = (arr, a, b, c, d) => arr.push(...a, ...b, ...c, ...a, ...c, ...d);
   // Heights on the side of the hull, between keel and sheer.
   const water = 0.16 * k;
@@ -51,10 +64,20 @@ function hullGeometry(L, B, hull, stripe, deck) {
       skin(parts.rub, flip, w0 * 1.015, d0 - bandH - rubH, d0 - bandH, z0, w1 * 1.015, d1 - bandH - rubH, d1 - bandH, z1);
       skin(parts.band, flip, w0, d0 - bandH, d0, z0, w1, d1 - bandH, d1, z1);
       // Inside face of the bulwark, seen from above.
-      skin(parts.inner, flip, w0 * 0.93, d0 - 0.2 * k, d0, z0, w1 * 0.93, d1 - 0.2 * k, d1, z1);
+      skin(parts.inner, flip, w0 * 0.93, d0 - DECK_DROP * k, d0, z0, w1 * 0.93, d1 - DECK_DROP * k, d1, z1);
     }
-    // Capping rail along the top, then the deck a little below it.
-    q(parts.top, [-w0 * 0.93, d0 - 0.2 * k, z0], [-w1 * 0.93, d1 - 0.2 * k, z1], [w1 * 0.93, d1 - 0.2 * k, z1], [w0 * 0.93, d0 - 0.2 * k, z0]);
+    // Capping the bulwark between its inner and outer faces.
+    for (const s of [-1, 1]) {
+      q(parts.band, [s * w0 * 0.93, d0, z0], [s * w0, d0, z0], [s * w1, d1, z1], [s * w1 * 0.93, d1, z1]);
+    }
+    // Deck plate.
+    q(parts.top, [-w0 * 0.93, d0 - DECK_DROP * k, z0], [-w1 * 0.93, d1 - DECK_DROP * k, z1], [w1 * 0.93, d1 - DECK_DROP * k, z1], [w0 * 0.93, d0 - DECK_DROP * k, z0]);
+    // The hull is solid: a keel plate underneath, and a floor at the waterline so a
+    // reflection, which sees her from below, never looks up inside her.
+    q(parts.floor, [-w0, k0, z0], [w0, k0, z0], [w1, k1, z1], [-w1, k1, z1]);
+    const y0 = Math.max(k0, 0.04);
+    const y1 = Math.max(k1, 0.04);
+    q(parts.floor, [-w0, y0, z0], [w0, y0, z0], [w1, y1, z1], [-w1, y1, z1]);
   }
   const [z0, w0, k0, d0] = stations[0];
   q(parts.foul, [-w0, k0, z0], [-w0, water, z0], [w0, water, z0], [w0, k0, z0]);
@@ -68,6 +91,7 @@ function hullGeometry(L, B, hull, stripe, deck) {
   };
   return [
     mk(parts.foul, '#3a2a2c'),
+    mk(parts.floor, shade(hull, 0.42)),
     mk(parts.side, hull),
     mk(parts.rub, shade(hull, 0.55)),
     mk(parts.band, stripe),
@@ -76,50 +100,83 @@ function hullGeometry(L, B, hull, stripe, deck) {
   ];
 }
 
+// A straight member between two points, for jibs, stays and wires.
+const UP = new THREE.Vector3(0, 1, 0);
+function beam(a, b, w, color) {
+  const dir = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const len = dir.length();
+  const g = box(w, len, w, color);
+  const qt = new THREE.Quaternion().setFromUnitVectors(UP, dir.normalize());
+  g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2), qt, new THREE.Vector3(1, 1, 1)));
+  return g;
+}
+
 // Static body of a hull: everything that does not animate. Also used for portraits.
+// Every fitting is placed from the hull lines, so it stands on what is under it.
 export function buildShipGeometry(model) {
   const { length: L, beam: B, hull, stripe, tiers, house, roof, crane: craneCol, mast } = model;
   const k = L / 8;
   const parts = hullGeometry(L, B, hull, stripe, '#8f8672');
-  const deckY = 0.78 * k + 0.02; // deck surface, sunk behind the bulwark
-  const workY = 0.98 * k;
+  const deckAt = (z) => (hullAt(z / L, 3) - DECK_DROP) * k; // deck surface at a position along her
+  const sheerAt = (z) => hullAt(z / L, 3) * k; // top of the bulwark
+  const halfAt = (z) => (hullAt(z / L, 1) * B) / 2;
   const steel = '#3c4a52';
   const rail = '#e9ecec';
+  const glass = '#27404f';
 
-  // Deck planking, as fine lines along the working deck.
-  for (let i = -2; i <= 2; i++) {
-    parts.push(place(box(0.025, 0.012, 0.56 * L, '#6d6657'), (i * B) / 7, deckY + 0.015, -0.17 * L));
-  }
-  // Hatch over the crab tank, with a raised coaming.
-  parts.push(place(box(B * 0.42, 0.12 * k, 0.2 * L, '#49626b'), 0, deckY + 0.06 * k, -0.02 * L));
-  parts.push(place(box(B * 0.34, 0.03 * k, 0.16 * L, '#5f7c85'), 0, deckY + 0.13 * k, -0.02 * L));
-
-  // Rails along the working deck and at the stern.
-  const railY = workY + 0.22 * k;
-  for (let i = 0; i < 6; i++) {
-    const z = -0.46 * L + (i * 0.56 * L) / 5;
-    for (const sx of [-1, 1]) parts.push(place(box(0.04, 0.4 * k, 0.04, rail), sx * (B * 0.47), railY, z));
-  }
-  for (const sx of [-1, 1]) parts.push(place(box(0.04, 0.04, 0.56 * L, rail), sx * (B * 0.47), workY + 0.42 * k, -0.18 * L));
-  parts.push(place(box(B * 0.94, 0.04, 0.04, rail), 0, workY + 0.42 * k, -0.46 * L));
-
-  // Wheelhouse, forward of midships as on the reference boat.
-  const hw = B * 0.62;
   const hd = 0.25 * L;
   const hz = 0.1 * L;
-  let y = workY;
+  const aft = hz - hd / 2;
+  const hw = B * 0.62;
+  const stern = -0.46 * L;
+  const workEnd = aft - 0.04 * L;
+
+  // Deck planking runs from the stern to the house, lying on the deck.
+  for (let i = -2; i <= 2; i++) {
+    const x = (i * B) / 7;
+    parts.push(beam([x, deckAt(stern) + 0.012, stern], [x, deckAt(workEnd) + 0.012, workEnd], 0.024, '#6d6657'));
+  }
+  // Hatch over the crab tank, to port, clear of the cages.
+  const hatchZ = -0.3 * L;
+  const hatchX = -B * 0.27;
+  parts.push(place(box(B * 0.24, 0.14 * k, 0.16 * L, '#49626b'), hatchX, deckAt(hatchZ) + 0.05 * k, hatchZ));
+  parts.push(place(box(B * 0.19, 0.03 * k, 0.13 * L, '#5f7c85'), hatchX, deckAt(hatchZ) + 0.13 * k, hatchZ));
+
+  // Rails follow the bulwark, posts standing on it.
+  const railUp = 0.38 * k;
+  let prev = null;
+  for (let i = 0; i <= 5; i++) {
+    const z = stern + (i * (workEnd - stern)) / 5;
+    const x = halfAt(z) * 0.965;
+    const y = sheerAt(z);
+    for (const s of [-1, 1]) {
+      parts.push(beam([s * x, y - 0.02, z], [s * x, y + railUp, z], 0.04, rail));
+      if (prev) parts.push(beam([s * prev.x, prev.y + railUp, prev.z], [s * x, y + railUp, z], 0.04, rail));
+    }
+    prev = { x, y, z };
+  }
+  {
+    const x = halfAt(stern) * 0.965;
+    const y = sheerAt(stern) + railUp;
+    parts.push(beam([-x, y, stern], [x, y, stern], 0.04, rail));
+  }
+
+  // Wheelhouse, forward of midships. Its first level stands right on the deck.
+  const workY = 0.98 * k;
   const tierH = 0.82 * k;
-  const glass = '#27404f';
+  let y = workY;
+  const footing = deckAt(hz) - 0.06 * k;
   for (let t = 0; t < tiers; t++) {
     const shrink = 1 - t * 0.14;
     const w = hw * shrink;
     const d = hd * shrink;
     const z = hz + t * 0.02 * L;
-    parts.push(place(box(w, tierH, d, house), 0, y + tierH / 2, z));
+    const base = t === 0 ? footing : y;
+    const height = y + tierH - base;
+    parts.push(place(box(w, height, d, house), 0, base + height / 2, z));
     parts.push(place(box(w + 0.05, 0.05 * k, d + 0.05, shade(house, 0.78)), 0, y + 0.03 * k, z));
-    const top = t === tiers - 1;
-    if (top) {
-      // Bridge: a wraparound band of panes split by white mullions, raked forward.
+    if (t === tiers - 1) {
+      // Bridge: a wraparound band of panes split by white mullions.
       const winH = 0.32 * k;
       const winY = y + tierH * 0.64;
       parts.push(place(box(w + 0.02, winH, d * 0.8, glass), 0, winY, z));
@@ -133,7 +190,6 @@ export function buildShipGeometry(model) {
         const pz = z - d * 0.4 + (d * 0.8 * i) / 3;
         for (const sx of [-1, 1]) parts.push(place(box(0.04, winH, 0.03, house), (sx * w) / 2 + sx * 0.01, winY, pz));
       }
-      // Overhanging roof with a visor over the windows.
       parts.push(place(box(w + 0.3 * k, 0.09 * k, d + 0.34 * k, roof), 0, y + tierH + 0.04, z + 0.03 * k));
       parts.push(place(box(w + 0.34 * k, 0.03 * k, d + 0.38 * k, shade(roof, 1.35)), 0, y + tierH + 0.1 * k, z + 0.03 * k));
     } else {
@@ -150,75 +206,113 @@ export function buildShipGeometry(model) {
     y += tierH;
   }
   const roofY = y;
-  // Door and ladder on the after face of the house.
-  const aft = hz - hd / 2;
-  parts.push(place(box(0.34 * k, 0.6 * k, 0.03, '#61757f'), B * -0.14, workY + 0.32 * k, aft - 0.01));
-  parts.push(place(box(0.04, tierH * tiers, 0.04, rail), B * 0.2, workY + (tierH * tiers) / 2, aft - 0.07));
-  parts.push(place(box(0.04, tierH * tiers, 0.04, rail), B * 0.2 + 0.26 * k, workY + (tierH * tiers) / 2, aft - 0.07));
-  const rungs = Math.round((tierH * tiers) / (0.16 * k));
-  for (let i = 1; i < rungs; i++) parts.push(place(box(0.26 * k, 0.025, 0.025, rail), B * 0.2 + 0.13 * k, workY + i * 0.16 * k, aft - 0.07));
 
-  // Roof fittings: rail, searchlight, horn and whip aerials.
-  const rw = hw * (1 - (tiers - 1) * 0.14) * 0.46;
-  const rd = hd * (1 - (tiers - 1) * 0.14) * 0.46;
-  const roofTop = roofY + 0.12 * k;
-  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) parts.push(place(box(0.03, 0.2 * k, 0.03, rail), sx * rw, roofTop + 0.1 * k, hz + sz * rd));
-  parts.push(place(box(rw * 2, 0.03, 0.03, rail), 0, roofTop + 0.2 * k, hz - rd));
-  parts.push(place(box(0.03, 0.03, rd * 2, rail), rw, roofTop + 0.2 * k, hz));
-  parts.push(place(box(0.03, 0.03, rd * 2, rail), -rw, roofTop + 0.2 * k, hz));
-  parts.push(place(cyl(0.07 * k, 0.09 * k, 0.09 * k, 8, '#f2e7b8'), rw * 0.6, roofTop + 0.06 * k, hz + rd * 0.8, 0, 1, 1, 1, Math.PI / 2));
-  parts.push(place(cyl(0.012, 0.02, 0.9 * k, 4, '#30383e'), -rw * 0.8, roofTop + 0.45 * k, hz - rd * 0.6));
-  parts.push(place(cyl(0.012, 0.02, 0.7 * k, 4, '#30383e'), rw * 0.8, roofTop + 0.35 * k, hz - rd * 0.6));
-  // Running lights: red to port, green to starboard.
-  parts.push(place(box(0.05, 0.08 * k, 0.12 * k, '#d6342d'), hw / 2 + 0.03, roofY - 0.1 * k, hz + hd * 0.32));
-  parts.push(place(box(0.05, 0.08 * k, 0.12 * k, '#2fa866'), -hw / 2 - 0.03, roofY - 0.1 * k, hz + hd * 0.32));
+  // Door and ladder on the after face of the house, both reaching the deck.
+  const aftDeck = deckAt(aft);
+  parts.push(place(box(0.34 * k, 0.72 * k, 0.03, '#61757f'), -B * 0.14, aftDeck + 0.36 * k, aft - 0.012));
+  const ladderX = B * 0.18;
+  const ladderW = 0.24 * k;
+  const ladderTop = roofY + 0.1 * k;
+  for (const lx of [ladderX, ladderX + ladderW]) parts.push(beam([lx, aftDeck, aft - 0.05], [lx, ladderTop, aft - 0.05], 0.035, rail));
+  for (let ry = aftDeck + 0.14 * k; ry < ladderTop; ry += 0.17 * k) parts.push(place(box(ladderW, 0.022, 0.022, rail), ladderX + ladderW / 2, ry, aft - 0.05));
 
-  // Stack, banded in the hull colour, and vents.
-  const stackX = B * 0.14;
-  const stackZ = hz - hd * 0.62;
-  parts.push(place(cyl(0.11 * k, 0.15 * k, 0.72 * k, 8, '#26343c'), stackX, workY + tierH * 0.86 + 0.2 * k, stackZ));
-  parts.push(place(cyl(0.122 * k, 0.133 * k, 0.16 * k, 8, hull), stackX, workY + tierH * 0.86 + 0.34 * k, stackZ));
-  parts.push(place(cyl(0.05 * k, 0.05 * k, 0.28 * k, 6, '#c9d0d3'), -B * 0.14, workY + tierH + 0.12 * k, hz - hd * 0.55));
-  // Life rings on the house sides, and a raft canister.
+  // Roof fittings all stand on the roof plate.
+  const topW = hw * (1 - (tiers - 1) * 0.14);
+  const topD = hd * (1 - (tiers - 1) * 0.14);
+  const topZ = hz + (tiers - 1) * 0.02 * L;
+  const rw = topW * 0.46;
+  const rd = topD * 0.46;
+  const roofTop = roofY + 0.11 * k;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) parts.push(beam([sx * rw, roofTop, topZ + sz * rd], [sx * rw, roofTop + 0.2 * k, topZ + sz * rd], 0.03, rail));
+  parts.push(beam([-rw, roofTop + 0.2 * k, topZ - rd], [rw, roofTop + 0.2 * k, topZ - rd], 0.03, rail));
+  for (const s of [-1, 1]) parts.push(beam([s * rw, roofTop + 0.2 * k, topZ - rd], [s * rw, roofTop + 0.2 * k, topZ + rd], 0.03, rail));
+  parts.push(place(cyl(0.03 * k, 0.04 * k, 0.1 * k, 6, '#3c4a52'), rw * 0.6, roofTop + 0.05 * k, topZ + rd * 0.75));
+  parts.push(place(cyl(0.07 * k, 0.07 * k, 0.1 * k, 8, '#f2e7b8'), rw * 0.6, roofTop + 0.14 * k, topZ + rd * 0.8, 0, 1, 1, 1, Math.PI / 2));
+  parts.push(place(cyl(0.012, 0.02, 0.9 * k, 4, '#30383e'), -rw * 0.8, roofTop + 0.45 * k, topZ - rd * 0.6));
+  parts.push(place(cyl(0.012, 0.02, 0.7 * k, 4, '#30383e'), rw * 0.8, roofTop + 0.35 * k, topZ - rd * 0.6));
+  // Running lights on the bridge wings: red to port, green to starboard.
+  parts.push(place(box(0.05, 0.08 * k, 0.12 * k, '#d6342d'), topW / 2 + 0.03, roofY - 0.1 * k, topZ + topD * 0.32));
+  parts.push(place(box(0.05, 0.08 * k, 0.12 * k, '#2fa866'), -topW / 2 - 0.03, roofY - 0.1 * k, topZ + topD * 0.32));
+
+  // Stack: rises from the deck against the after face, and clears the roof.
+  const stackX = B * 0.2;
+  const stackZ = aft - 0.14 * k;
+  const stackBase = deckAt(stackZ);
+  const stackTop = workY + tierH + 0.62 * k;
+  parts.push(place(cyl(0.12 * k, 0.14 * k, stackTop - stackBase, 8, '#26343c'), stackX, (stackBase + stackTop) / 2, stackZ));
+  parts.push(place(cyl(0.125 * k, 0.125 * k, 0.15 * k, 8, hull), stackX, stackTop - 0.18 * k, stackZ));
+  parts.push(place(cyl(0.135 * k, 0.135 * k, 0.03 * k, 8, '#1b2429'), stackX, stackTop, stackZ));
+  // Life rings on the house sides, and a raft canister on a cradle beside the door.
   const ring = () => paint(new THREE.TorusGeometry(0.13 * k, 0.04 * k, 4, 10), '#e3662e');
-  parts.push(place(ring(), hw / 2 + 0.02, workY + tierH * 0.45, hz - hd * 0.3, Math.PI / 2));
-  parts.push(place(ring(), -hw / 2 - 0.02, workY + tierH * 0.45, hz - hd * 0.3, Math.PI / 2));
-  parts.push(place(cyl(0.12 * k, 0.12 * k, 0.42 * k, 8, '#eef1f1'), -B * 0.34, workY + 0.14 * k, aft - 0.2 * k, 0, 1, 1, 1, Math.PI / 2));
+  parts.push(place(ring(), hw / 2 + 0.03, workY + tierH * 0.45, hz - hd * 0.3, Math.PI / 2));
+  parts.push(place(ring(), -hw / 2 - 0.03, workY + tierH * 0.45, hz - hd * 0.3, Math.PI / 2));
+  const raftZ = aft - 0.42 * k;
+  parts.push(place(box(0.34 * k, 0.06 * k, 0.22 * k, steel), -B * 0.34, deckAt(raftZ) + 0.03 * k, raftZ));
+  parts.push(place(cyl(0.12 * k, 0.12 * k, 0.42 * k, 8, '#eef1f1'), -B * 0.34, deckAt(raftZ) + 0.18 * k, raftZ, 0, 1, 1, 1, 0, Math.PI / 2));
 
-  // Masts.
+  // Masts. The main stands on the roof; a second, if she has one, on the deck, stayed to the first.
   const mastZ = hz;
   const mh = 1.5 * k;
+  const mainTop = roofY + mh;
   parts.push(place(cyl(0.035 * k, 0.05 * k, mh, 6, '#e9ecec'), 0, roofY + mh / 2, mastZ));
   parts.push(place(box(0.7 * k, 0.03 * k, 0.03 * k, '#e9ecec'), 0, roofY + mh * 0.68, mastZ));
-  parts.push(place(box(0.06 * k, 0.06 * k, 0.06 * k, '#f2e7b8'), 0, roofY + mh * 0.68 + 0.05 * k, mastZ));
-  parts.push(place(cone(0.05 * k, 0.1 * k, 5, '#d7a436'), 0, roofY + mh + 0.06, mastZ));
+  parts.push(place(box(0.06 * k, 0.06 * k, 0.06 * k, '#f2e7b8'), 0, roofY + mh * 0.68 + 0.045 * k, mastZ));
+  parts.push(place(cone(0.05 * k, 0.1 * k, 5, '#d7a436'), 0, mainTop + 0.05 * k, mastZ));
   if (mast > 1) {
-    parts.push(place(cyl(0.03 * k, 0.05 * k, mh * 1.1, 6, '#e9ecec'), 0, workY + mh * 0.55, -0.26 * L));
-    parts.push(place(box(0.03 * k, 0.03 * k, 0.5 * L, steel), 0, roofY + mh * 0.3, -0.08 * L, 0, 1, 1, 1, 0.14));
+    const z2 = -0.34 * L;
+    const base = deckAt(z2);
+    const top2 = base + mh * 1.25;
+    parts.push(place(cyl(0.03 * k, 0.05 * k, top2 - base, 6, '#e9ecec'), B * 0.28, (base + top2) / 2, z2));
+    parts.push(beam([B * 0.28, top2 - 0.04, z2], [0, roofY + mh * 0.6, mastZ], 0.018, steel));
   }
 
-  // Hauling crane on the working deck: post, jib, block and the winch beneath it.
-  const craneZ = -0.08 * L;
-  parts.push(place(cyl(0.08 * k, 0.11 * k, 1 * k, 7, craneCol), B * 0.32, workY + 0.5 * k, craneZ));
-  parts.push(place(box(0.16 * k, 0.1 * k, 0.16 * k, shade(craneCol, 0.8)), B * 0.32, workY + 0.96 * k, craneZ));
-  parts.push(place(box(0.09 * k, 0.09 * k, 1.1 * k, craneCol), B * 0.14, workY + 1 * k, craneZ - 0.05 * L, -0.5, 1, 1, 1, -0.34));
-  parts.push(place(box(0.02, 0.5 * k, 0.02, '#26292c'), -0.1, workY + 0.84 * k, craneZ - 0.11 * L));
-  parts.push(place(box(0.08 * k, 0.1 * k, 0.08 * k, '#d7a436'), -0.1, workY + 0.56 * k, craneZ - 0.11 * L));
-  parts.push(place(cyl(0.16 * k, 0.16 * k, 0.34 * k, 8, '#3f5c66'), -B * 0.3, workY + 0.14 * k, craneZ, 0, 1, 1, 1, Math.PI / 2));
-  // Rope coiled on deck, and a row of spare buoys along the stern rail.
-  parts.push(place(paint(new THREE.TorusGeometry(0.16 * k, 0.05 * k, 4, 10), '#d98b3a'), -B * 0.2, deckY + 0.06 * k, -0.38 * L, 0, 1, 1, 1, Math.PI / 2));
-  for (let i = -1; i <= 1; i++) parts.push(place(paint(new THREE.IcosahedronGeometry(0.1 * k, 0), '#e3662e'), (i * B) / 4.4, workY + 0.46 * k, -0.47 * L));
-
-  // Foredeck: rails converging on the stem, anchor winch, and a hawse pipe each side.
-  const bz = 0.33 * L;
-  const by = 1.3 * k;
-  for (const sx of [-1, 1]) {
-    parts.push(place(box(0.04, 0.3 * k, 0.05, rail), sx * B * 0.24, by + 0.28 * k, bz + 0.05 * L));
-    parts.push(place(box(0.04, 0.05, 0.2 * L, rail), sx * B * 0.17, by + 0.42 * k, bz + 0.07 * L, sx * -0.28));
-    parts.push(place(cyl(0.05 * k, 0.05 * k, 0.03, 8, '#26292c'), sx * B * 0.24, 1.05 * k, 0.36 * L, 0, 1, 1, 1, 0, Math.PI / 2));
+  // Hauling crane: post from the deck, a jib out over the side, a wire and block.
+  const craneZ = -0.1 * L;
+  const postX = B * 0.3;
+  const postBase = deckAt(craneZ);
+  const postTop = postBase + 1.15 * k;
+  parts.push(place(cyl(0.08 * k, 0.11 * k, postTop - postBase, 7, craneCol), postX, (postBase + postTop) / 2, craneZ));
+  parts.push(place(box(0.2 * k, 0.12 * k, 0.2 * k, shade(craneCol, 0.8)), postX, postBase + 0.08 * k, craneZ));
+  parts.push(place(box(0.17 * k, 0.11 * k, 0.17 * k, shade(craneCol, 0.8)), postX, postTop, craneZ));
+  const tip = [postX + 0.95 * k * 0.34, postTop + 0.34 * k, craneZ - 0.65 * k];
+  parts.push(beam([postX, postTop, craneZ], tip, 0.09 * k, craneCol));
+  const blockY = deckAt(tip[2]) + 0.5 * k;
+  parts.push(beam(tip, [tip[0], blockY, tip[2]], 0.018, '#26292c'));
+  parts.push(place(box(0.09 * k, 0.12 * k, 0.09 * k, '#d7a436'), tip[0], blockY, tip[2]));
+  // Winch standing on the deck, by the crane.
+  const winchZ = craneZ + 0.5 * k;
+  parts.push(place(box(0.34 * k, 0.08 * k, 0.3 * k, steel), postX - 0.05 * k, deckAt(winchZ) + 0.04 * k, winchZ));
+  parts.push(place(cyl(0.13 * k, 0.13 * k, 0.3 * k, 8, '#3f5c66'), postX - 0.05 * k, deckAt(winchZ) + 0.2 * k, winchZ, 0, 1, 1, 1, 0, Math.PI / 2));
+  // Rope coiled on the deck, and spare buoys lashed along the stern rail.
+  const coilZ = -0.42 * L;
+  parts.push(place(paint(new THREE.TorusGeometry(0.15 * k, 0.05 * k, 4, 10), '#d98b3a'), -B * 0.2, deckAt(coilZ) + 0.05 * k, coilZ, 0, 1, 1, 1, Math.PI / 2));
+  {
+    const y0 = sheerAt(stern) + railUp;
+    for (let i = -1; i <= 1; i++) parts.push(place(paint(new THREE.IcosahedronGeometry(0.1 * k, 0), '#e3662e'), (i * B) / 4.6, y0 - 0.1 * k, stern - 0.015));
   }
-  parts.push(place(box(0.34 * k, 0.2 * k, 0.28 * k, '#3f5c66'), 0, by + 0.1 * k, bz));
-  parts.push(place(cyl(0.05 * k, 0.05 * k, 0.5 * k, 6, '#2c383e'), 0, by + 0.14 * k, bz, 0, 1, 1, 1, 0, Math.PI / 2));
+
+  // Foredeck: rails converging on the stem, an anchor winch and a hawse each side.
+  const fore0 = hz + hd / 2 + 0.03 * L;
+  const fore1 = 0.46 * L;
+  let fPrev = null;
+  for (let i = 0; i <= 4; i++) {
+    const z = fore0 + (i * (fore1 - fore0)) / 4;
+    const x = halfAt(z) * 0.93;
+    const yb = sheerAt(z);
+    for (const s of [-1, 1]) {
+      parts.push(beam([s * x, yb - 0.02, z], [s * x, yb + 0.3 * k, z], 0.04, rail));
+      if (fPrev) parts.push(beam([s * fPrev.x, fPrev.y + 0.3 * k, fPrev.z], [s * x, yb + 0.3 * k, z], 0.04, rail));
+    }
+    fPrev = { x, y: yb, z };
+  }
+  const anchorZ = 0.3 * L;
+  const anchorY = deckAt(anchorZ);
+  parts.push(place(box(0.34 * k, 0.16 * k, 0.28 * k, '#3f5c66'), 0, anchorY + 0.08 * k, anchorZ));
+  parts.push(place(cyl(0.05 * k, 0.05 * k, 0.5 * k, 6, '#2c383e'), 0, anchorY + 0.18 * k, anchorZ, 0, 1, 1, 1, 0, Math.PI / 2));
+  for (const s of [-1, 1]) {
+    const hz2 = 0.38 * L;
+    parts.push(place(cyl(0.05 * k, 0.05 * k, 0.03, 8, '#26292c'), s * (halfAt(hz2) + 0.005), sheerAt(hz2) - 0.34 * k, hz2, 0, 1, 1, 1, 0, Math.PI / 2));
+  }
   return merged(parts);
 }
 
@@ -226,17 +320,21 @@ export function makeBoatMaterial() {
   return stylize(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
 }
 
+// Where cages stack: two columns on the working deck, from the stern to the house,
+// higher only once the deck is full.
 function deckSlots(m, count) {
-  const k = m.length / 8;
+  const L = m.length;
+  const k = L / 8;
   const slots = [];
-  const deckY = 0.8 * k;
-  const rows = Math.ceil(count / 4);
-  const size = 0.52;
-  for (let layer = 0; layer < 3; layer++) {
-    for (let r = 0; r < rows + 1; r++) {
-      for (const col of [-0.5, 0.5]) {
-        slots.push([col * size * 1.15, deckY + 0.2 + layer * 0.42, -0.42 * m.length + 0.32 + r * size * 1.2]);
-      }
+  const start = -0.43 * L + 0.34;
+  const end = 0.1 * L - 0.125 * L - 0.04 * L - 0.34;
+  const pitch = 0.6;
+  const rows = Math.max(2, Math.floor((end - start) / pitch) + 1);
+  for (let layer = 0; layer < 6 && slots.length < count; layer++) {
+    for (let r = 0; r < rows; r++) {
+      const z = start + r * pitch;
+      const deck = (hullAt(z / L, 3) - DECK_DROP) * k;
+      for (const col of [-0.3, 0.3]) slots.push([col, deck + 0.21 + layer * 0.42, z]);
     }
   }
   return slots;
@@ -315,10 +413,14 @@ export function setShipClass(root, classId) {
   const roofY = deckY + tierH * model.tiers;
   u.pennant.position.set(0, roofY + 1.5 * k - 0.1, 0.1 * model.length);
   u.radarBar.position.set(0, roofY + 1.5 * k * 0.5, 0.1 * model.length);
-  u.deckhand.position.set(-model.beam * 0.24, 0.8 * k, -0.16 * model.length);
+  const L = model.length;
+  const crewDeck = (z) => (hullAt(z / L, 3) - DECK_DROP) * k;
+  u.deckhand.position.set(-model.beam * 0.28, crewDeck(-0.14 * L), -0.14 * L);
   u.skipper.position.set(model.beam * 0.08, roofY - tierH * 0.8, 0.14 * model.length);
   u.skipper.visible = false;
-  u.captain.position.set(0, roofY + 0.04, 0.1 * model.length - 0.6);
+  const doorZ = 0.1 * L - 0.125 * L - 0.28 * k;
+  u.captain.position.set(-model.beam * 0.14, crewDeck(doorZ), doorZ);
+  u.stack = { x: model.beam * 0.2, y: deckY + tierH + 0.62 * k, z: 0.1 * L - 0.125 * L - 0.14 * k };
   const slots = deckSlots(model, 24);
   const m = new THREE.Matrix4();
   for (let i = 0; i < 24; i++) {
