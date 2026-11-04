@@ -34,10 +34,10 @@ function putAtSea(g) {
 
 test('world generation is deterministic and the berth is in open water', () => {
   const again = generateWorld(1234);
-  assert.equal(again.islands.length, world.islands.length);
+  assert.equal(again.features.length, world.features.length);
   assert.equal(again.density(50, 80), world.density(50, 80));
   assert.ok(world.shoreDistance(world.port.x, world.port.z) > 4, 'berth too close to land');
-  assert.ok(world.heightAt(0, 0) > 1, 'port island should exist at the origin');
+  assert.ok(world.heightAt(0, 15) > 1, 'the town should sit on the mainland');
 });
 
 test('cage yield rises to its peak, then escapes softly down to the floor', () => {
@@ -55,7 +55,7 @@ test('higher gears are faster and burn more fuel per metre', () => {
   const burnFor = (gear) => {
     const g = newGame();
     putAtSea(g);
-    g.s.ship.heading = 0;
+    g.s.ship.heading = Math.PI;
     g.s.ship.gear = gear;
     const x0 = g.s.ship.x;
     const z0 = g.s.ship.z;
@@ -190,7 +190,7 @@ test('a looping chain drops, soaks, collects, sells and sails again by itself', 
   let spot = null;
   for (let a = 0.3; a < 3 && !spot; a += 0.1) {
     const x = world.port.x + Math.sin(a - 1.5) * 90;
-    const z = world.port.z + Math.cos(a - 1.5) * 90;
+    const z = world.port.z - Math.cos(a - 1.5) * 90;
     if (world.shoreDistance(x, z) > 10) spot = { x, z };
   }
   assert.ok(spot, 'needs a spot of open water');
@@ -280,4 +280,153 @@ test('state survives a JSON round trip', () => {
   assert.deepEqual(copy.s, g.s);
   run(copy, 2);
   assert.ok(copy.s.t > g.s.t);
+});
+
+test('the wheel stays where you leave it until it is centred', () => {
+  const g = newGame();
+  putAtSea(g);
+  g.s.ship.gear = 2;
+  g.helmInput = 1;
+  run(g, 1);
+  g.helmInput = 0;
+  const held = g.s.ship.helm;
+  assert.ok(held > 0.3);
+  const h0 = g.s.ship.heading;
+  run(g, 2);
+  assert.equal(g.s.ship.helm, held, 'helm must not spring back');
+  assert.ok(g.s.ship.heading > h0, 'ship keeps turning with the wheel over');
+  g.centerHelm();
+  run(g, 1);
+  assert.equal(g.s.ship.helm, 0);
+});
+
+test('a new ship brings its own stats and refits carry over', () => {
+  const g = newGame();
+  g.s.money = 1e6;
+  assert.ok(g.upgrade('tank'));
+  const refit = g.upgradeBonus('tank');
+  assert.equal(g.maxTank, CFG.ships.auk.tank + refit);
+  assert.ok(g.buyShip('kittiwake'));
+  assert.equal(g.s.fleet.current, 'kittiwake');
+  assert.equal(g.maxTank, CFG.ships.kittiwake.tank + refit);
+  assert.equal(g.buyShip('kittiwake'), false, 'cannot buy twice');
+  g.s.crabs = g.maxTank;
+  assert.equal(g.boardShip('auk'), false, 'catch must fit the tank');
+  g.s.crabs = 0;
+  assert.ok(g.boardShip('auk'));
+  assert.ok(g.s.fuel <= g.maxFuel);
+});
+
+test('cage management: info, round-up orders and writing a cage off', () => {
+  const g = newGame();
+  putAtSea(g);
+  g.s.money = 100;
+  const { x, z } = g.s.ship;
+  g.s.cages.push({ id: 1, x: x + 30, z, t0: 0, density: 0.5, ready: false }, { id: 2, x: x + 10, z, t0: 0, density: 0.5, ready: false });
+  assert.equal(g.cageInfo(g.s.cages[0]).status, 'Soaking');
+  assert.equal(g.orderCollectReady(), 0, 'needs crew');
+  g.s.crew.captain = true;
+  g.s.crew.deckhand = true;
+  assert.equal(g.orderCollectReady(), 0, 'nothing ready yet');
+  g.s.t = CFG.soakPeak + 1;
+  assert.equal(g.cageInfo(g.s.cages[0]).status, 'Ready');
+  assert.equal(g.orderCollectReady(), 2);
+  assert.equal(g.s.auto.orders[0].x, x + 10, 'nearest cage first');
+  assert.equal(g.s.auto.orders.at(-1).type, 'port');
+  assert.ok(g.abandonCage(2));
+  assert.equal(g.s.cages.length, 1);
+  assert.equal(g.s.money, 100 - CFG.cageWriteOff);
+  assert.ok(!g.s.auto.orders.some((o) => o.type === 'collect' && o.x === x + 10));
+});
+
+test('the pier is solid and the berth can only be reached from its east side', () => {
+  const g = newGame();
+  const { pier } = world.port;
+  assert.ok(world.navDistance(0, -10) === 0);
+  g.s.ship.docked = false;
+  g.s.ship.x = pier.x0 - 3;
+  g.s.ship.z = -18;
+  assert.equal(g.canDock, false);
+  g.s.ship.x = world.port.x;
+  assert.equal(g.canDock, true);
+});
+
+test('a heavy hull: speed and swing build up gradually', () => {
+  const g = newGame();
+  putAtSea(g);
+  g.s.ship.gear = 4;
+  run(g, 1);
+  assert.ok(g.s.ship.speed < CFG.gears[5].speed * 0.3, 'full speed takes time to reach');
+  run(g, 10);
+  assert.ok(g.s.ship.speed > CFG.gears[5].speed * 0.95);
+  const h0 = g.s.ship.heading;
+  g.helmInput = 1;
+  run(g, 0.5);
+  g.helmInput = 0;
+  assert.ok(Math.abs(g.s.ship.heading - h0) < 0.08, 'the bow is slow to start swinging');
+  g.centerHelm();
+  run(g, 6);
+  assert.ok(Math.abs(g.s.ship.yawRate) < 0.02, 'and settles once the rudder is back');
+});
+
+test('casting off leaves the engine idle', () => {
+  const g = newGame();
+  const { x, z } = g.s.ship;
+  assert.ok(g.setSail());
+  assert.equal(g.s.ship.gear, 0);
+  run(g, 5);
+  assert.equal(g.s.ship.speed, 0);
+  assert.ok(Math.hypot(g.s.ship.x - x, g.s.ship.z - z) < 0.01, 'she stays put until shifted');
+});
+
+test('the open sea north of the mesh is sailable and bounded', () => {
+  const g = newGame();
+  putAtSea(g);
+  g.s.ship.x = 0;
+  g.s.ship.z = world.bounds.z0 + 2;
+  g.s.ship.heading = Math.PI;
+  g.s.ship.speed = 5;
+  g.s.ship.gear = 3;
+  run(g, 4);
+  assert.equal(g.s.ship.z, world.bounds.z0, 'stops at the limit');
+  assert.ok(world.navDistance(0, -500) > 20, 'nothing to hit out there');
+});
+
+test('docking is a slow approach, and the moorings go on only at the berth', () => {
+  const g = newGame();
+  const { port } = world;
+  const s = g.s;
+  s.ship.docked = false;
+  s.ship.x = port.x + 6;
+  s.ship.z = port.z - 6;
+  s.ship.heading = Math.PI;
+  s.ship.speed = 3;
+  assert.ok(g.beginBerthing());
+  run(g, 1);
+  assert.equal(s.ship.docked, false, 'not teleported alongside');
+  let top = 0;
+  let last = { x: s.ship.x, z: s.ship.z };
+  let t = 0;
+  while (!s.ship.docked && t < 90) {
+    run(g, 1);
+    t += 1;
+    top = Math.max(top, Math.hypot(s.ship.x - last.x, s.ship.z - last.z));
+    last = { x: s.ship.x, z: s.ship.z };
+  }
+  assert.ok(s.ship.docked, 'arrives eventually');
+  assert.ok(t > 4, `took only ${t}s`);
+  assert.ok(top <= CFG.berthSpeed + 0.01, `moved ${top} in a second`);
+  assert.ok(Math.hypot(s.ship.x - port.x, s.ship.z - port.z) < 0.1);
+});
+
+test('shifting gear breaks off a berthing', () => {
+  const g = newGame();
+  const { port } = world;
+  g.s.ship.docked = false;
+  g.s.ship.x = port.x + 6;
+  g.s.ship.z = port.z - 6;
+  assert.ok(g.beginBerthing());
+  g.shiftGear(1);
+  assert.equal(g.s.ship.berthing, false);
+  assert.equal(g.s.ship.gear, 1);
 });

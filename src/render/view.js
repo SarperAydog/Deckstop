@@ -1,20 +1,22 @@
 // Scene orchestration: isometric camera, weather palette, miniature post effect.
 import * as THREE from 'three';
-import { buildFloes, buildWorldMeshes } from './terrain.js';
-import { buildWater } from './water.js';
+import { buildTerrainGeometry, Floes, terrainMaterial } from './terrain.js';
+import { buildTown, relightTrees } from './town.js';
+import { buildWater, waveState } from './water.js';
 import { buildShip, BuoyField, updateShip, makeBoatMaterial } from './ship.js';
-import { Flecks, Rain, Snow, Wake } from './fx.js';
+import { Flecks, Gulls, Rain, Snow, Wake } from './fx.js';
 import { box, cyl, merged, place } from './kit.js';
-import { mistUniforms } from './mist.js';
+import { hullUniforms, mirrorMaterial, mistUniforms, outlineMaterial, stylize, voxUniforms } from './mist.js';
+import { VoxelField } from './voxels.js';
 
 // Three weather moods. They blend continuously from sim weather values.
 const MOODS = {
-  clear: { mist: '#e0e1da', deep: '#6d9aa5', shallow: '#c6dfdb', reflect: '#49727e', sky: '#f7f3e8', ground: '#a9bfc0', sun: '#fff1da', sunI: 2.2, skyI: 1.7 },
-  overcast: { mist: '#c8cdcb', deep: '#7c9a9f', shallow: '#c3d3d0', reflect: '#5c7880', sky: '#e2e6e4', ground: '#a2b0b2', sun: '#eef0ee', sunI: 1.25, skyI: 2.2 },
-  storm: { mist: '#8d989c', deep: '#465f6a', shallow: '#8ea3a6', reflect: '#2f434c', sky: '#a9b4b8', ground: '#6a7a80', sun: '#c7d0d4', sunI: 0.8, skyI: 1.9 },
+  clear: { mist: '#dbe6e9', deep: '#3b8590', mid: '#3c97a0', shallow: '#66babb', reflect: '#2c6875', sky: '#ffffff', ground: '#c4d3e4', sun: '#fff6e6', ao: '#93a6c4', sunI: 1.3, skyI: 2.05 },
+  overcast: { mist: '#c6d0d4', deep: '#4c7f89', mid: '#558f96', shallow: '#7fb0b0', reflect: '#3f6a74', sky: '#e8edf0', ground: '#b4c1cd', sun: '#eef0ee', ao: '#808fa6', sunI: 0.6, skyI: 2.3 },
+  storm: { mist: '#8d9aa0', deep: '#34545f', mid: '#3d5f69', shallow: '#6d8a8e', reflect: '#253b44', sky: '#b4bfc5', ground: '#74838c', sun: '#c7d0d4', ao: '#5f6d82', sunI: 0.35, skyI: 2 },
 };
 for (const m of Object.values(MOODS)) {
-  for (const k of ['mist', 'deep', 'shallow', 'reflect', 'sky', 'ground', 'sun']) m[k] = new THREE.Color(m[k]);
+  for (const k of ['mist', 'deep', 'mid', 'shallow', 'reflect', 'sky', 'ground', 'sun', 'ao']) m[k] = new THREE.Color(m[k]);
 }
 
 const POST_VERT = /* glsl */ `
@@ -26,13 +28,14 @@ const POST_FRAG = /* glsl */ `
   uniform vec2 uTexel;
   uniform vec3 uVignette;
   varying vec2 vUv;
+  uniform float uTilt;
   void main() {
-    // Tilt-shift: sharp across the middle band, softly out of focus above and below.
-    float band = smoothstep(0.26, 0.5, abs(vUv.y - 0.52));
+    // Tilt-shift: sharp through the middle, softly out of focus at top and bottom.
+    float band = smoothstep(0.3, 0.52, abs(vUv.y - 0.5)) * uTilt;
     vec3 col = texture2D(tScene, vUv).rgb;
     if (band > 0.001) {
       vec3 sum = col;
-      float r = band * 2.6;
+      float r = band * 2.2;
       const int N = 8;
       for (int i = 0; i < N; i++) {
         float a = float(i) / float(N) * 6.28318;
@@ -41,8 +44,8 @@ const POST_FRAG = /* glsl */ `
       }
       col = sum / float(1 + N * 2);
     }
-    float v = smoothstep(0.42, 0.95, length((vUv - 0.5) * vec2(1.05, 1.15)));
-    col = mix(col, uVignette, v * 0.6);
+    // Cold air lying over the distance, at the top of the frame.
+    col = mix(col, uVignette, smoothstep(0.81, 1.025, vUv.y) * 0.415);
     gl_FragColor = vec4(col, 1.0);
     #include <colorspace_fragment>
   }
@@ -59,7 +62,6 @@ function buildTug() {
     ]),
     mat,
   );
-  g.castShadow = true;
   return g;
 }
 
@@ -67,45 +69,96 @@ export class View {
   constructor(canvas, world) {
     this.world = world;
     this.canvas = canvas;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'low-power', preserveDrawingBuffer: false });
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
     this.scene = new THREE.Scene();
     this.scene.background = mistUniforms.uMistColor.value;
 
     this.yaw = Math.PI * 0.25;
     this.pitch = 0.62;
-    this.zoom = 38;
-    this.zoomTarget = 38;
+    this.zoom = 21;
+    this.zoomTarget = 21;
+    this.userZoom = 1;
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 900);
-    this.focus = new THREE.Vector3(world.port.x - 3, 0, world.port.z - 7);
+    this.focus = new THREE.Vector3(world.port.x - 3, 0, world.port.z + 22);
     this.lookAhead = new THREE.Vector2();
     this.time = 0;
     this.quality = 'high';
+    this.settings = { tiltShift: true, snow: true, outlines: true };
+    this.showcase = true; // the title screen's slow orbit around the harbour
     this.width = 1;
     this.height = 1;
 
     this.hemi = new THREE.HemisphereLight(0xffffff, 0xffffff, 2);
-    this.sun = new THREE.DirectionalLight(0xffffff, 2);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.bias = -0.0006;
-    this.sun.shadow.normalBias = 0.04;
-    this.sun.shadow.radius = 5;
+    this.sun = new THREE.DirectionalLight(0xffffff, 1);
     this.scene.add(this.hemi, this.sun, this.sun.target);
 
-    this.scene.add(buildWorldMeshes(world));
-    this.scene.add(buildFloes(world));
+    // Light comes from the voxel field: build it from everything that stands.
+    this.voxels = new VoxelField(world);
+    const town = buildTown(world, this.voxels);
+    this.voxels.bake();
+    this.voxels.applyTo(voxUniforms);
+    relightTrees(town.trees, this.voxels);
+
+    const propMat = stylize(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    this.outlineMat = outlineMaterial();
+    this.mirrorMat = mirrorMaterial();
+    const terrainGeo = buildTerrainGeometry(world);
+    const terrain = new THREE.Mesh(terrainGeo, terrainMaterial());
+    const props = new THREE.Mesh(town.props, propMat);
+    const trees = new THREE.Mesh(town.trees, propMat);
+    for (const m of [terrain, props, trees]) m.frustumCulled = false;
+    this.scene.add(terrain, props, trees);
+    this.outlines = new THREE.Group();
+    for (const g of [town.props, town.trees]) {
+      const hull = new THREE.Mesh(g, this.outlineMat);
+      hull.frustumCulled = false;
+      this.outlines.add(hull);
+    }
+    this.scene.add(this.outlines);
+
+    // Reflections: the same geometry, flipped below the water.
+    this.mirrorScene = new THREE.Scene();
+    this.mirrorRoot = new THREE.Group();
+    this.mirrorRoot.scale.y = -1;
+    for (const g of [terrainGeo, town.props, town.trees]) {
+      const mm = new THREE.Mesh(g, this.mirrorMat);
+      mm.frustumCulled = false;
+      this.mirrorRoot.add(mm);
+    }
+    this.mirrorScene.add(this.mirrorRoot);
+    this.mirrorTarget = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: true });
+
     const water = buildWater(world);
     this.water = water;
+    water.uniforms.uMirror.value = this.mirrorTarget.texture;
     this.scene.add(water.mesh);
+    this.floes = new Floes(
+      this.scene,
+      world,
+      stylize(new THREE.MeshLambertMaterial({ vertexColors: true })),
+      stylize(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })),
+      (x, z, r) => {
+        this.flecks.splash(x, z, Math.round(3 + r), 0.9);
+        this.onIceBreak?.(r);
+      },
+    );
     this.ship = buildShip();
     this.scene.add(this.ship);
+    this.shipHull = new THREE.Mesh(this.ship.userData.body.geometry, this.outlineMat);
+    this.shipHull.matrixAutoUpdate = false;
+    this.shipHull.frustumCulled = false;
+    this.scene.add(this.shipHull);
+    this.shipMirror = new THREE.Mesh(this.ship.userData.body.geometry, this.mirrorMat);
+    this.shipMirror.matrixAutoUpdate = false;
+    this.shipMirror.frustumCulled = false;
+    this.mirrorScene.add(this.shipMirror);
+
     this.buoys = new BuoyField(this.scene);
     this.flecks = new Flecks(this.scene);
     this.wake = new Wake(this.flecks);
     this.rain = new Rain(this.scene);
     this.snow = new Snow(this.scene);
+    this.gulls = new Gulls(this.scene, stylize(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })));
 
     this.tug = buildTug();
     this.tug.visible = false;
@@ -129,6 +182,7 @@ export class View {
       tScene: { value: this.target.texture },
       uTexel: { value: new THREE.Vector2(1 / 4, 1 / 4) },
       uVignette: { value: mistUniforms.uMistColor.value },
+      uTilt: { value: 1 },
     };
     const mat = new THREE.ShaderMaterial({
       vertexShader: POST_VERT,
@@ -146,11 +200,6 @@ export class View {
 
   setQuality(q) {
     this.quality = q;
-    this.sun.shadow.mapSize.setScalar(q === 'high' ? 2048 : 1024);
-    if (this.sun.shadow.map) {
-      this.sun.shadow.map.dispose();
-      this.sun.shadow.map = null;
-    }
     this.applySize();
   }
 
@@ -168,6 +217,10 @@ export class View {
     const ph = Math.floor(this.height * dpr);
     this.target.setSize(pw, ph);
     this.postUniforms.uTexel.value.set(1 / pw, 1 / ph);
+    const mirrorScale = this.quality === 'high' ? 0.5 : 0.34;
+    this.mirrorTarget.setSize(Math.max(2, Math.floor(pw * mirrorScale)), Math.max(2, Math.floor(ph * mirrorScale)));
+    this.water.uniforms.uResolution.value.set(pw, ph);
+    hullUniforms.uPixel.value.set((2 * dpr) / pw, (2 * dpr) / ph);
   }
 
   addYaw(dx, dy) {
@@ -176,7 +229,7 @@ export class View {
   }
 
   addZoom(delta) {
-    this.zoomTarget = THREE.MathUtils.clamp(this.zoomTarget * Math.exp(delta * 0.0012), 16, 90);
+    this.userZoom = THREE.MathUtils.clamp(this.userZoom * Math.exp(delta * 0.0012), 0.5, 3.2);
   }
 
   // Screen pixels to a point on the sea surface.
@@ -213,13 +266,18 @@ export class View {
     const lookK = 1 - Math.exp(-dt * 0.9);
     this.lookAhead.x += (Math.sin(s.ship.heading) * sp * 0.9 - this.lookAhead.x) * lookK;
     this.lookAhead.y += (Math.cos(s.ship.heading) * sp * 0.9 - this.lookAhead.y) * lookK;
-    const k = 1 - Math.exp(-dt * 2.2);
+    const k = 1 - Math.exp(-dt * (this.showcase ? 0.9 : 1.6));
     const docked = s.ship.docked;
-    const fx = shipRoot.position.x + this.lookAhead.x - (docked ? 3 : 0);
-    const fz = shipRoot.position.z + this.lookAhead.y - (docked ? 7 : 0);
+    let fx = shipRoot.position.x + this.lookAhead.x;
+    let fz = shipRoot.position.z + this.lookAhead.y;
+    const base = docked ? 21 : 31 * (this.seaZoom ?? 1);
+    if (this.showcase) {
+      this.yaw = Math.PI * 0.25 + Math.sin(t * 0.07) * 0.16;
+    }
+    this.zoomTarget = (this.showcase ? 23 : base) * (this.showcase ? 1 : this.userZoom);
     this.focus.x += (fx - this.focus.x) * k;
     this.focus.z += (fz - this.focus.z) * k;
-    this.zoom += (this.zoomTarget - this.zoom) * (1 - Math.exp(-dt * 6));
+    this.zoom += (this.zoomTarget - this.zoom) * (1 - Math.exp(-dt * 2.5));
 
     const aspect = this.width / this.height;
     const halfH = this.zoom * Math.max(1, 1.5 / aspect); // narrow windows pull back to keep the framing
@@ -242,32 +300,24 @@ export class View {
     // Mist radius scales with zoom so the diorama framing holds at any distance.
     const reach = Math.max(halfW, halfH / Math.sin(this.pitch));
     mistUniforms.uFocus.value.set(this.focus.x, this.focus.z);
-    mistUniforms.uMistNear.value = reach * 0.6;
-    mistUniforms.uMistFar.value = reach * 1.2;
+    mistUniforms.uMistNear.value = reach * 1.05;
+    mistUniforms.uMistFar.value = reach * 1.9;
 
-    const sunDist = 180;
-    this.sun.position.set(this.focus.x - sunDist * 0.5, sunDist, this.focus.z + sunDist * 0.28);
+    // Soft, low sun from the left of the frame. No cast shadows: the voxel AO does it.
+    this.sun.position.set(this.focus.x - 100, 130, this.focus.z + 62);
     this.sun.target.position.set(this.focus.x, 0, this.focus.z);
-    const sc = this.sun.shadow.camera;
-    const ext = Math.min(120, reach * 1.25);
-    if (sc.right !== ext) {
-      sc.left = -ext;
-      sc.right = ext;
-      sc.top = ext;
-      sc.bottom = -ext;
-      sc.near = 10;
-      sc.far = 480;
-      sc.updateProjectionMatrix();
-    }
 
     const u = this.water.uniforms;
     u.uTime.value = t;
     u.uOrigin.value.set(this.focus.x, this.focus.z);
     u.uScale.value = reach * 3.4;
-    u.uWave.value = w.storm * 0.55;
+    // Hulls always feel a faint swell. The water mesh itself only moves in a storm.
+    u.uWave.value = w.storm * 0.26;
+    waveState.geo = u.uWave.value;
+    waveState.amp = 0.09 + w.storm * 0.26;
     u.uStorm.value = w.storm;
     u.uRain.value = Math.max(w.storm, w.overcast * 0.12);
-    u.uViewDir.value.set(-Math.sin(this.yaw), -Math.cos(this.yaw));
+    u.uHull.value.set(shipRoot.userData.length * 0.54, shipRoot.userData.beam * 0.62);
     u.uShip.value.set(shipRoot.position.x, shipRoot.position.z);
     u.uShipDir.value.set(Math.sin(shipRoot.rotation.y), Math.cos(shipRoot.rotation.y));
     const radarWant = s.radarOn ? 1 : 0;
@@ -275,10 +325,12 @@ export class View {
     u.uRadarR.value = game.radarRange;
 
     this.buoys.update(game, t);
-    this.wake.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, dt);
+    this.wake.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, dt, shipRoot.userData.length);
+    this.floes.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, dt, t);
+    this.gulls.update(t, dt, -2, -6, shipRoot.position.x, shipRoot.position.z);
     this.flecks.update(dt);
     this.rain.update(this.focus.x, this.focus.z, reach, w.storm + w.overcast * 0.08, t);
-    this.snow.update(this.focus.x, this.focus.z, reach, Math.max(0, 0.75 - w.storm * 1.5), t);
+    this.snow.update(this.focus.x, this.focus.z, reach, this.settings.snow ? Math.max(0, 0.75 - w.storm * 1.5) : 0, t);
 
     // Tow ship leads the way when called.
     this.tug.visible = s.towing;
@@ -296,13 +348,32 @@ export class View {
       this.wake.update(tx, tz, h, sp, dt);
     }
 
+    // The ship's hull and mirror copies follow it around.
+    const body = shipRoot.userData.body;
+    shipRoot.updateMatrixWorld(true);
+    this.shipHull.geometry = body.geometry;
+    this.shipHull.matrix.copy(body.matrixWorld);
+    this.shipMirror.geometry = body.geometry;
+    this.flip ??= new THREE.Matrix4().makeScale(1, -1, 1);
+    this.shipMirror.matrix.multiplyMatrices(this.flip, body.matrixWorld);
+    this.outlines.visible = this.settings.outlines;
+    this.shipHull.visible = this.settings.outlines;
+
+    const r = this.renderer;
+    r.setClearColor(0x000000, 0);
+    r.setRenderTarget(this.mirrorTarget);
+    r.clear();
+    r.render(this.mirrorScene, cam);
+    r.setClearColor(0x000000, 1);
     if (this.quality === 'high') {
-      this.renderer.setRenderTarget(this.target);
-      this.renderer.render(this.scene, cam);
-      this.renderer.setRenderTarget(null);
-      this.renderer.render(this.postScene, this.postCam);
+      this.postUniforms.uTilt.value = this.settings.tiltShift ? 1 : 0;
+      r.setRenderTarget(this.target);
+      r.render(this.scene, cam);
+      r.setRenderTarget(null);
+      r.render(this.postScene, this.postCam);
     } else {
-      this.renderer.render(this.scene, cam);
+      r.setRenderTarget(null);
+      r.render(this.scene, cam);
     }
   }
 
@@ -317,6 +388,8 @@ export class View {
     const u = this.water.uniforms;
     blend('deep', u.uDeep.value);
     blend('shallow', u.uShallow.value);
+    blend('mid', u.uMid.value);
+    blend('ao', voxUniforms.uAoTint.value);
     blend('reflect', u.uReflect.value);
     blend('sky', this.hemi.color);
     blend('ground', this.hemi.groundColor);

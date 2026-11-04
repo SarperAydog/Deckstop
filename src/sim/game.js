@@ -21,9 +21,9 @@ export function cageYield(cage, now) {
 }
 
 export function newState(world) {
-  const up = CFG.upgrades;
+  const first = CFG.ships.auk;
   return {
-    v: 1,
+    v: 2,
     seed: world.seed,
     t: 0,
     money: CFG.start.money,
@@ -34,14 +34,18 @@ export function newState(world) {
       speed: 0,
       gear: 0,
       rudder: 0,
+      helm: 0,
+      yawRate: 0,
       docked: true,
     },
-    fuel: up.fuel.values[0],
-    provisions: up.provisions.values[0],
+    fuel: first.fuel,
+    provisions: first.provisions,
     crabs: 0,
     wagesOwed: 0,
     levels: { fuel: 0, provisions: 0, tank: 0, cages: 0, radar: 0 },
     crew: { captain: false, deckhand: false },
+    fleet: { current: 'auk', owned: ['auk'] },
+    waypoint: null,
     cages: [],
     nextCageId: 1,
     radarOn: false,
@@ -63,7 +67,10 @@ export class Game {
     this.s = state ?? newState(world);
     this.events = [];
     this.acc = 0;
-    this.turnInput = 0;
+    this.turnInput = 0; // the autopilot's wish for the rudder
+    this.helmInput = 0; // -1, 0 or 1 while the player holds A or D
+    this.helmCentering = false;
+    this.timeScale = 1; // debug panel only
     this.path = null;
     this.pathKey = null;
     this.prev = { x: this.s.ship.x, z: this.s.ship.z, heading: this.s.ship.heading };
@@ -74,8 +81,16 @@ export class Game {
   }
 
   // ---- derived values -------------------------------------------------------
+  get shipClass() {
+    return CFG.ships[this.s.fleet.current];
+  }
+  // A refit adds its step on top of whatever the current hull offers.
+  upgradeBonus(key, level = this.s.levels[key]) {
+    const v = CFG.upgrades[key].values;
+    return v[level] - v[0];
+  }
   upgradeValue(key) {
-    return CFG.upgrades[key].values[this.s.levels[key]];
+    return this.shipClass[key] + this.upgradeBonus(key);
   }
   get maxFuel() {
     return this.upgradeValue('fuel');
@@ -93,7 +108,10 @@ export class Game {
     return this.upgradeValue('radar');
   }
   get cagesAboard() {
-    return this.maxCages - this.s.cages.length;
+    return Math.max(0, this.maxCages - this.s.cages.length);
+  }
+  get topSpeed() {
+    return CFG.gears[CFG.gears.length - 1].speed * this.shipClass.speed;
   }
   get tankFree() {
     return Math.max(0, this.maxTank - this.s.crabs);
@@ -106,8 +124,11 @@ export class Game {
   }
   get canDock() {
     const { ship, towing } = this.s;
-    if (ship.docked || towing) return false;
-    return Math.hypot(ship.x - this.world.port.x, ship.z - this.world.port.z) < CFG.dockReach;
+    if (ship.docked || towing || ship.berthing) return false;
+    // The berth is on the east side of the pier: no ghosting through the planks.
+    const { port } = this.world;
+    if (ship.x < port.pier.x1 && ship.z > port.pier.z0) return false;
+    return Math.hypot(ship.x - port.x, ship.z - port.z) < CFG.dockReach;
   }
   get provisionsOut() {
     return this.s.provisions <= 0;
@@ -144,7 +165,7 @@ export class Game {
 
   // ---- frame stepping -------------------------------------------------------
   advance(realDt) {
-    this.acc += Math.min(realDt, 5);
+    this.acc += Math.min(realDt, 5) * this.timeScale;
     while (this.acc >= STEP) {
       this.prev = { x: this.s.ship.x, z: this.s.ship.z, heading: this.s.ship.heading };
       this.step(STEP);
@@ -162,6 +183,7 @@ export class Game {
     this.stepAction();
     if (s.towing) this.stepTow(dt);
     else if (s.ship.docked) this.stepDocked(dt);
+    else if (s.ship.berthing) this.stepBerthing(dt);
     else {
       if (s.auto.active) this.stepAutopilot(dt);
       this.stepShip(dt);
@@ -175,10 +197,54 @@ export class Game {
     const k = 1 - Math.exp(-dt * 2.5);
     ship.x += (port.x - ship.x) * k;
     ship.z += (port.z - ship.z) * k;
-    ship.heading += wrapAngle(port.heading - ship.heading) * k;
+    ship.heading += wrapAngle((ship.mooredHeading ?? port.heading) - ship.heading) * k;
     ship.speed = 0;
     ship.gear = 0;
+    ship.helm = 0;
+    ship.rudder = 0;
+    ship.yawRate = 0;
     if (this.s.auto.active) this.stepAutopilotDocked();
+  }
+
+  // Coming alongside: the way comes off her, she creeps in and swings parallel to
+  // the pier, bow whichever way she arrived. The moorings go on only at the end.
+  beginBerthing() {
+    const { ship } = this.s;
+    if (!this.canDock) return false;
+    ship.berthing = true;
+    ship.gear = 0;
+    ship.helm = 0;
+    ship.rudder = 0;
+    ship.yawRate = 0;
+    const north = Math.abs(wrapAngle(this.world.port.heading - ship.heading));
+    ship.mooredHeading = north <= Math.PI / 2 ? this.world.port.heading : wrapAngle(this.world.port.heading + Math.PI);
+    this.path = null;
+    this.emit('berthing');
+    return true;
+  }
+
+  stepBerthing(dt) {
+    const { ship } = this.s;
+    const { port } = this.world;
+    const dx = port.x - ship.x;
+    const dz = port.z - ship.z;
+    const dist = Math.hypot(dx, dz);
+    const wanted = Math.max(CFG.berthMinSpeed, Math.min(CFG.berthSpeed, dist * 0.22));
+    ship.speed = approach(ship.speed, wanted, CFG.berthDecel * dt);
+    const face = dist > 4 ? Math.atan2(dx, dz) : ship.mooredHeading;
+    const turn = wrapAngle(face - ship.heading);
+    // Backing in when the berth lies astern is more seamanlike than spinning round.
+    const aim = dist > 4 && Math.abs(turn) > Math.PI / 2 ? wrapAngle(turn + Math.PI) : turn;
+    ship.heading += clamp(aim * 0.7, -CFG.berthTurn, CFG.berthTurn) * dt;
+    const step = Math.min(dist, Math.abs(ship.speed) * dt);
+    if (dist > 1e-3) {
+      ship.x += (dx / dist) * step;
+      ship.z += (dz / dist) * step;
+    }
+    if (dist - step < 0.05 && Math.abs(wrapAngle(ship.mooredHeading - ship.heading)) < 0.03) {
+      ship.berthing = false;
+      this.dock();
+    }
   }
 
   stepShip(dt) {
@@ -187,7 +253,8 @@ export class Game {
     const storm = s.weather.storm;
     const busy = s.minigameCageId !== null;
 
-    let target = this.gear.speed;
+    const cls = this.shipClass;
+    let target = this.gear.speed * cls.speed;
     if (this.provisionsOut) target *= CFG.noProvisionSpeed;
     target *= 1 - 0.25 * storm;
     if (s.fuel <= 0 || busy) target = 0;
@@ -195,10 +262,26 @@ export class Game {
     const braking = ship.gear === 0 || Math.abs(target) < Math.abs(ship.speed);
     ship.speed = approach(ship.speed, target, (braking ? CFG.brake : CFG.accel) * dt);
 
-    ship.rudder = approach(ship.rudder, busy ? 0 : this.turnInput, 3.2 * dt);
-    const authority = 0.35 + 0.65 * Math.min(1, Math.abs(ship.speed) / 4);
+    // The wheel stays wherever it was left, like a real helm. Only the autopilot
+    // or an explicit centring moves it back.
+    if (s.auto.active) {
+      ship.helm = approach(ship.helm, this.turnInput, 3.2 * dt);
+    } else if (this.helmInput) {
+      this.helmCentering = false;
+      ship.helm = clamp(ship.helm + this.helmInput * CFG.helmRate * dt, -1, 1);
+    } else if (this.helmCentering) {
+      ship.helm = approach(ship.helm, 0, CFG.helmRate * 2 * dt);
+      if (ship.helm === 0) this.helmCentering = false;
+    } else if (Math.abs(ship.helm) < 0.05) ship.helm = 0;
+    ship.rudder = approach(ship.rudder, busy ? 0 : ship.helm, (s.auto.active ? 3.2 : CFG.rudderRate) * dt);
+    // A loaded hull needs way on to answer the helm, and it takes time to start
+    // swinging and time to stop.
+    const authority = 0.25 + 0.75 * Math.min(1, Math.abs(ship.speed) / 2.5);
     const direction = ship.speed < -0.05 ? -1 : 1;
-    ship.heading += ship.rudder * CFG.turnRate * authority * direction * dt;
+    const wantYaw = ship.rudder * CFG.turnRate * cls.turn * authority * direction;
+    const yawK = CFG.yawLag > 0 ? 1 - Math.exp(-dt / CFG.yawLag) : 1;
+    ship.yawRate = (ship.yawRate ?? 0) + (wantYaw - (ship.yawRate ?? 0)) * yawK;
+    ship.heading += ship.yawRate * dt;
 
     // Storm: yaw and sideways shove make the ship harder to hold on course.
     let driftX = 0;
@@ -211,8 +294,8 @@ export class Game {
 
     const nx = ship.x + (Math.sin(ship.heading) * ship.speed + driftX) * dt;
     const nz = ship.z + (Math.cos(ship.heading) * ship.speed + driftZ) * dt;
-    const here = this.world.shoreDistance(ship.x, ship.z);
-    const there = this.world.shoreDistance(nx, nz);
+    const here = this.world.navDistance(ship.x, ship.z);
+    const there = this.world.navDistance(nx, nz);
     if (there < 2 && there < here) {
       if (s.t - this.lastAground > 3 && Math.abs(ship.speed) > 1) {
         this.emit('aground');
@@ -222,13 +305,13 @@ export class Game {
       ship.speed = -ship.speed * 0.15;
       ship.gear = 0;
     } else {
-      const lim = this.world.half - 6;
-      ship.x = clamp(nx, -lim, lim);
-      ship.z = clamp(nz, -lim, lim);
+      const b = this.world.bounds;
+      ship.x = clamp(nx, b.x0, b.x1);
+      ship.z = clamp(nz, b.z0, b.z1);
     }
 
     if (Math.abs(ship.speed) > 0.05) {
-      const fuelRate = this.gear.fuel * (s.auto.active ? CFG.autopilotFuelFactor : 1);
+      const fuelRate = this.gear.fuel * cls.burn * CFG.tune.burn * (s.auto.active ? CFG.autopilotFuelFactor : 1);
       s.fuel = Math.max(0, s.fuel - fuelRate * dt);
       if (s.fuel <= 0 && !s.stranded) this.onStranded();
     }
@@ -241,6 +324,10 @@ export class Game {
       const crew = CFG.wagePerMinute;
       const perMin = (s.crew.captain ? crew.captain : 0) + (s.crew.deckhand ? crew.deckhand : 0);
       s.wagesOwed += (perMin / 60) * dt;
+    }
+    if (s.waypoint && Math.hypot(s.waypoint.x - s.ship.x, s.waypoint.z - s.ship.z) < CFG.waypointReach) {
+      s.waypoint = null;
+      this.toast('Waypoint reached.', 'good');
     }
     this.warnLow('fuel', s.fuel / this.maxFuel < CFG.lowResource, 'Fuel running low');
     this.warnLow('provisions', s.provisions / this.maxProvisions < CFG.lowResource, 'Provisions running low');
@@ -341,11 +428,12 @@ export class Game {
 
   dropBlockReason() {
     const s = this.s;
-    if (s.ship.docked) return 'You cannot drop cages in port.';
+    if (s.ship.docked || s.ship.berthing) return 'You cannot drop cages in port.';
     if (s.action || s.minigameCageId !== null) return 'The deck is busy.';
     if (this.cagesAboard <= 0) return 'No cages left aboard.';
-    if (Math.abs(s.ship.speed) > 3.6) return 'Too fast: slow to gear 1 to drop.';
+    if (Math.abs(s.ship.speed) > CFG.dropMaxSpeed * this.shipClass.speed) return 'Too fast: slow to gear 1 to drop.';
     if (this.world.shoreDistance(s.ship.x, s.ship.z) < CFG.minDropShoreDistance) return 'Too shallow here.';
+    if (Math.hypot(s.ship.x - this.world.port.x, s.ship.z - this.world.port.z) < CFG.minDropPortDistance) return 'Not in the harbour fairway.';
     const crowded = s.cages.some((c) => Math.hypot(c.x - s.ship.x, c.z - s.ship.z) < CFG.minCageSpacing);
     if (crowded) return 'Another cage is too close.';
     return null;
@@ -442,12 +530,133 @@ export class Game {
   shiftGear(delta) {
     const { ship } = this.s;
     if (ship.docked || this.s.towing) return;
+    if (ship.berthing) ship.berthing = false; // changed your mind: back under way
     ship.gear = clamp(ship.gear + delta, -1, CFG.gears.length - 1 - CFG.gearOffset);
   }
 
   brake() {
-    if (this.s.ship.docked || this.s.towing) return;
+    if (this.s.ship.docked || this.s.towing || this.s.ship.berthing) return;
     this.s.ship.gear = 0;
+  }
+
+  centerHelm() {
+    this.helmCentering = true;
+  }
+
+  // ---- cage management ------------------------------------------------------
+  cageInfo(c) {
+    const age = this.s.t - c.t0;
+    const ready = age >= CFG.soakPeak;
+    const late = age > CFG.soakPeak + 20;
+    const { ship } = this.s;
+    return {
+      age,
+      ready,
+      late,
+      untilReady: Math.max(0, CFG.soakPeak - age),
+      soak: Math.min(1, age / CFG.soakPeak),
+      crabs: Math.round(cageYield(c, this.s.t)),
+      lost: ready ? Math.round(cageYield(c, c.t0 + CFG.soakPeak) - cageYield(c, this.s.t)) : 0,
+      distance: Math.hypot(c.x - ship.x, c.z - ship.z),
+      status: !ready ? 'Soaking' : late ? 'Escaping' : 'Ready',
+    };
+  }
+
+  setWaypoint(x, z) {
+    this.s.waypoint = { x, z };
+  }
+
+  clearWaypoint() {
+    this.s.waypoint = null;
+  }
+
+  orderCollect(id) {
+    const c = this.s.cages.find((k) => k.id === id);
+    if (!c) return false;
+    if (!this.s.crew.captain) {
+      this.toast('Hire a captain to give orders from the chart.', 'warn');
+      return false;
+    }
+    this.addOrder({ type: 'collect', x: c.x, z: c.z });
+    return true;
+  }
+
+  // Queues every ready cage, nearest first, then a run home to sell.
+  orderCollectReady() {
+    const s = this.s;
+    if (!s.crew.captain || !s.crew.deckhand) {
+      this.toast('A round-up needs both a captain and a deckhand.', 'warn');
+      return 0;
+    }
+    const left = s.cages.filter((c) => s.t - c.t0 >= CFG.soakPeak);
+    if (!left.length) {
+      this.toast('No cages are ready yet.');
+      return 0;
+    }
+    let { x, z } = s.ship;
+    const n = left.length;
+    while (left.length) {
+      let best = 0;
+      let bd = Infinity;
+      left.forEach((c, i) => {
+        const d = Math.hypot(c.x - x, c.z - z);
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      });
+      const [c] = left.splice(best, 1);
+      this.addOrder({ type: 'collect', x: c.x, z: c.z });
+      x = c.x;
+      z = c.z;
+    }
+    this.addOrder({ type: 'port' });
+    return n;
+  }
+
+  // Cut a cage loose from anywhere: it frees the slot, but the catch is lost.
+  abandonCage(id) {
+    const s = this.s;
+    const c = s.cages.find((k) => k.id === id);
+    if (!c) return false;
+    if (s.money < CFG.cageWriteOff) {
+      this.toast(`A replacement cage costs $${CFG.cageWriteOff}.`, 'warn');
+      return false;
+    }
+    s.money -= CFG.cageWriteOff;
+    s.cages = s.cages.filter((k) => k.id !== id);
+    s.auto.orders = s.auto.orders.filter((o) => o.type !== 'collect' || Math.hypot(o.x - c.x, o.z - c.z) > 1);
+    s.auto.idx = Math.min(s.auto.idx, Math.max(0, s.auto.orders.length - 1));
+    this.toast(`Cage written off: -$${CFG.cageWriteOff}`, 'warn');
+    return true;
+  }
+
+  // ---- fleet ---------------------------------------------------------------
+  buyShip(id) {
+    const s = this.s;
+    const cls = CFG.ships[id];
+    if (!cls || !s.ship.docked || s.fleet.owned.includes(id) || s.money < cls.cost) return false;
+    s.money -= cls.cost;
+    s.fleet.owned.push(id);
+    this.emit('upgraded', { key: id });
+    this.boardShip(id);
+    return true;
+  }
+
+  boardShip(id) {
+    const s = this.s;
+    if (!s.ship.docked || !s.fleet.owned.includes(id) || s.fleet.current === id) return false;
+    const room = CFG.ships[id].tank + this.upgradeBonus('tank');
+    if (s.crabs > room) {
+      this.toast('Sell your catch first: it will not fit in that tank.', 'warn');
+      return false;
+    }
+    s.fleet.current = id;
+    s.fuel = Math.min(s.fuel, this.maxFuel);
+    s.provisions = Math.min(s.provisions, this.maxProvisions);
+    this.emit('shipChanged', { id });
+    this.toast(`You take the helm of the ${CFG.ships[id].name}.`, 'good');
+    return true;
   }
 
   exitAutopilot() {
@@ -484,7 +693,10 @@ export class Game {
       return false;
     }
     s.ship.docked = false;
-    s.ship.gear = s.auto.active ? 0 : 1;
+    s.ship.mooredHeading = null;
+    s.ship.helm = 0;
+    s.ship.rudder = 0;
+    s.ship.gear = 0; // casting off leaves her idling: the engine is the player's call
     this.emit('sail');
     if (s.voyage.expired) this.ring();
     return true;
@@ -647,7 +859,7 @@ export class Game {
       this.pathKey = key;
     }
     let wp = this.path[0];
-    while (wp && Math.hypot(wp.x - ship.x, wp.z - ship.z) < (this.path.length > 1 ? 5 : 3)) {
+    while (wp && Math.hypot(wp.x - ship.x, wp.z - ship.z) < (this.path.length > 1 ? 7 : 4.5)) {
       this.path.shift();
       wp = this.path[0];
     }
@@ -658,7 +870,9 @@ export class Game {
     }
     const want = wrapAngle(Math.atan2(wp.x - ship.x, wp.z - ship.z) - ship.heading);
     this.turnInput = clamp(want * 2.2, -1, 1);
-    ship.gear = Math.abs(want) > 1.2 ? 1 : CFG.cruiseGear;
+    // Ease off for a big turn or the last stretch, so she does not circle the mark.
+    const close = this.path.length === 1 && Math.hypot(wp.x - ship.x, wp.z - ship.z) < 14;
+    ship.gear = Math.abs(want) > 0.9 || close ? 1 : CFG.cruiseGear;
     void dt;
     return false;
   }
@@ -684,7 +898,7 @@ export class Game {
       const arrived = this.sailTo(this.world.port.x, this.world.port.z, dt);
       if (arrived || this.canDock) {
         this.turnInput = 0;
-        this.dock();
+        this.beginBerthing();
       }
       return;
     }

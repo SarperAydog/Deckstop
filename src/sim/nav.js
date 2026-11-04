@@ -11,7 +11,7 @@ export function createNav(world) {
     for (let x = 0; x < n; x++) {
       const wx = x * CELL - half + CELL / 2;
       const wz = z * CELL - half + CELL / 2;
-      if (world.shoreDistance(wx, wz) < CLEARANCE) blocked[z * n + x] = 1;
+      if (world.navDistance(wx, wz) < CLEARANCE) blocked[z * n + x] = 1;
     }
   }
   const toCell = (v) => Math.max(0, Math.min(n - 1, Math.floor((v + half) / CELL)));
@@ -22,7 +22,7 @@ export function createNav(world) {
     const steps = Math.ceil(len / 2);
     for (let i = 0; i <= steps; i++) {
       const t = steps ? i / steps : 0;
-      if (world.shoreDistance(ax + (bx - ax) * t, az + (bz - az) * t) < CLEARANCE - 1) return false;
+      if (world.navDistance(ax + (bx - ax) * t, az + (bz - az) * t) < CLEARANCE - 1) return false;
     }
     return true;
   };

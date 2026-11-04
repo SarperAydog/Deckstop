@@ -49,116 +49,6 @@ export function fbm(x, y, seed, octaves = 3) {
 const sat = (v) => Math.min(1, Math.max(0, v));
 const smooth = (t) => t * t * (3 - 2 * t);
 
-function roundedBoxSdf(px, pz, b) {
-  const c = Math.cos(b.rot);
-  const s = Math.sin(b.rot);
-  const dx = px - b.x;
-  const dz = pz - b.z;
-  const lx = Math.abs(c * dx + s * dz) - b.hx + b.r;
-  const lz = Math.abs(-s * dx + c * dz) - b.hz + b.r;
-  const ox = Math.max(lx, 0);
-  const oz = Math.max(lz, 0);
-  return Math.hypot(ox, oz) + Math.min(Math.max(lx, lz), 0) - b.r;
-}
-
-function blobExtent(b) {
-  return Math.hypot(b.hx, b.hz) + 3;
-}
-
-function makeIsland(kind, blobs, seed) {
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  for (const b of blobs) {
-    const e = blobExtent(b);
-    minX = Math.min(minX, b.x - e);
-    maxX = Math.max(maxX, b.x + e);
-    minZ = Math.min(minZ, b.z - e);
-    maxZ = Math.max(maxZ, b.z + e);
-  }
-  return { kind, blobs, seed, minX, maxX, minZ, maxZ };
-}
-
-// Island height: the highest rounded plateau wins. Walls are short and steep, so
-// the result reads as stacked soft-edged blocks rather than rolling hills.
-export function islandHeight(isl, x, z) {
-  if (x < isl.minX || x > isl.maxX || z < isl.minZ || z > isl.maxZ) return -0.6;
-  const wob = (fbm(x * 0.09, z * 0.09, isl.seed, 2) - 0.5) * 3.2;
-  let h = -0.6;
-  for (const b of isl.blobs) {
-    const d = roundedBoxSdf(x, z, b) + wob * (b.wobble ?? 1);
-    const t = sat(-d / b.wall);
-    if (t <= 0) continue;
-    const v = -0.6 + (b.level + 0.6) * smooth(Math.pow(t, 0.8));
-    if (v > h) h = v;
-  }
-  return h;
-}
-
-function portIsland(seed) {
-  return makeIsland(
-    'port',
-    [
-      { x: 0, z: 0, hx: 34, hz: 25, r: 10, level: 0.55, wall: 1.6, rot: 0 },
-      { x: -2, z: -5, hx: 27, hz: 15, r: 7, level: 4.2, wall: 1.7, rot: 0.03 },
-      { x: -11, z: -9, hx: 10, hz: 8, r: 4.5, level: 7.8, wall: 1.5, rot: -0.12 },
-      { x: 17, z: -11, hx: 7, hz: 5.5, r: 3.5, level: 6.4, wall: 1.3, rot: 0.25 },
-    ],
-    seed,
-  );
-}
-
-function wildIsland(cx, cz, r, seed) {
-  const rand = rng(seed);
-  const size = 8 + rand() * 20;
-  const rot = rand() * Math.PI;
-  const blobs = [
-    {
-      x: cx,
-      z: cz,
-      hx: size * (0.8 + rand() * 0.5),
-      hz: size * (0.6 + rand() * 0.4),
-      r: 4 + rand() * 3,
-      level: 0.5,
-      wall: 1.5,
-      rot,
-    },
-  ];
-  const stacks = 1 + Math.floor(rand() * 3);
-  let level = 2.2 + rand() * 1.6;
-  for (let i = 0; i < stacks; i++) {
-    const ang = rand() * Math.PI * 2;
-    const off = size * 0.35 * rand();
-    const shrink = 0.72 - i * 0.14;
-    blobs.push({
-      x: cx + Math.cos(ang) * off,
-      z: cz + Math.sin(ang) * off,
-      hx: size * shrink * (0.7 + rand() * 0.4),
-      hz: size * shrink * (0.5 + rand() * 0.4),
-      r: 2.5 + rand() * 2.5,
-      level,
-      wall: 1.3 + rand() * 0.5,
-      rot: rot + (rand() - 0.5) * 0.7,
-    });
-    level += 1.5 + rand() * 2;
-  }
-  return makeIsland(r < 0.28 ? 'ice' : 'wild', blobs, seed);
-}
-
-function iceberg(cx, cz, seed) {
-  const rand = rng(seed);
-  const s = 2.5 + rand() * 4;
-  return makeIsland(
-    'ice',
-    [
-      { x: cx, z: cz, hx: s * 1.3, hz: s, r: s * 0.6, level: 0.6, wall: 1, rot: rand() * 3, wobble: 0.5 },
-      { x: cx + rand() - 0.5, z: cz + rand() - 0.5, hx: s * 0.8, hz: s * 0.65, r: s * 0.4, level: 2 + rand() * 3.5, wall: 1.1, rot: rand() * 3, wobble: 0.5 },
-    ],
-    seed,
-  );
-}
-
 // Felzenszwalb 1D squared-distance transform.
 function edt1d(f, n, d, v, z) {
   let k = 0;
@@ -208,53 +98,177 @@ function distanceTransform(mask, n, cell) {
   return out;
 }
 
+const sstep = (a, b, v) => smooth(sat((v - a) / (b - a)));
+const mix = (a, b, t) => a + (b - a) * t;
+
+function distSegment(x, z, ax, az, bx, bz) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const t = sat(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz));
+  return Math.hypot(x - ax - dx * t, z - az - dz * t);
+}
+
+// Town footprint: everything inside is levelled for building on.
+export const TOWN = { x0: -34, x1: 42, z0: -9, z1: 42 };
+
+// Signed "how far inland" field for the mainland. The sea lies towards -Z, so from
+// the default camera the coast runs across the screen with land at the lower left.
+function landField(x, z, seed) {
+  const far = sstep(58, 150, Math.abs(x));
+  const swing = (fbm(x * 0.0075 + 5.1, 3.3, seed + 11, 3) - 0.5) * 210;
+  const ripple = (fbm(x * 0.031, 8.7, seed + 13, 2) - 0.5) * 12;
+  // A cove on the west side of the harbour, sheltered by the breakwater.
+  const cove = 7 * sstep(-9, -19, x) * sstep(-44, -30, x);
+  const coast = -3 + cove + ripple * (0.25 + far * 0.75) + swing * far;
+  let f = z - coast + (fbm(x * 0.021 + 3, z * 0.021 - 2, seed + 17, 3) - 0.5) * 78 * far;
+  // The mainland wraps round the west of the fishing grounds.
+  // It tapers off before the northern edge of the ground mesh.
+  f = Math.max(f, -x - 262 - sstep(-190, -285, z) * 130 + (fbm(z * 0.016, 1.5, seed + 19, 3) - 0.5) * 90);
+  // Lighthouse point, east of town.
+  f = Math.max(f, 7.5 - Math.hypot((x - 27) * 0.8, z + 6.5));
+  return f;
+}
+
+function breakwaterField(x, z) {
+  const a = distSegment(x, z, -17, 6, -15, -3);
+  const b = distSegment(x, z, -15, -3, -12, -12);
+  return Math.max(2.3 - Math.min(a, b), 3 - Math.hypot(x + 12, z + 12.5));
+}
+
 export function generateWorld(seed) {
   const size = CFG.worldSize;
   const half = size / 2;
+  const step = CFG.meshStep;
   const rand = rng(seed);
-  const islands = [portIsland(seed + 1)];
-  const placed = [{ x: 0, z: 0, r: 80 }];
 
-  const tryPlace = (minR, maxR, clearance, make) => {
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const ang = rand() * Math.PI * 2;
-      const dist = minR + rand() * (maxR - minR);
-      const x = Math.cos(ang) * dist;
-      const z = Math.sin(ang) * dist;
-      if (Math.abs(x) > half - 40 || Math.abs(z) > half - 40) continue;
-      // Keep the sea lane south of the pier clear so leaving port is never fiddly.
-      if (z > 0 && z < 110 && Math.abs(x) < 34) continue;
-      if (placed.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + clearance)) continue;
-      placed.push({ x, z, r: clearance });
-      islands.push(make(x, z));
-      return;
+  // Offshore: a few rocky skerries and big flat sheets of ice to steer around.
+  const features = [];
+  const clearOf = (x, z, r) => {
+    if (Math.abs(x) > half - 30 || Math.abs(z) > half - 30) return false;
+    if (Math.hypot(x - 6, z + 18) < 62 + r) return false;
+    if (landField(x, z, seed) > -22 - r) return false;
+    return features.every((f) => Math.hypot(f.x - x, f.z - z) > f.r + r + 16);
+  };
+  const scatter = (count, kind, rMin, rMax) => {
+    for (let i = 0; i < count; i++) {
+      for (let t = 0; t < 25; t++) {
+        const x = (rand() - 0.5) * size;
+        const z = -half + rand() * size;
+        const r = rMin + rand() * (rMax - rMin);
+        if (clearOf(x, z, r)) {
+          features.push({ kind, x, z, r, s: Math.floor(rand() * 1e6) });
+          break;
+        }
+      }
     }
   };
+  scatter(4, 'skerry', 6, 11);
+  scatter(10, 'ice', 9, 24);
 
-  for (let i = 0; i < 20; i++) {
-    const s = Math.floor(rand() * 1e9);
-    const kindRoll = rand();
-    tryPlace(100, 300, 46, (x, z) => wildIsland(x, z, kindRoll, s));
-  }
-  for (let i = 0; i < 26; i++) {
-    const s = Math.floor(rand() * 1e9);
-    tryPlace(62, 310, 14, (x, z) => iceberg(x, z, s));
+  // The ground is one jittered triangle mesh. Height queries, collision and the
+  // renderer all share it, so the faceted shoreline you see is the one you hit.
+  const nv = Math.ceil(size / step) + 1;
+  const px = new Float32Array(nv * nv);
+  const pz = new Float32Array(nv * nv);
+  const py = new Float32Array(nv * nv);
+  const inland = new Float32Array(nv * nv);
+  const surf = new Uint8Array(nv * nv); // 0 mainland, 1 rock, 2 ice
+  for (let j = 0; j < nv; j++) {
+    for (let i = 0; i < nv; i++) {
+      const k = j * nv + i;
+      const x = -half + i * step + (hash2(i, j, seed + 3) - 0.5) * step * 0.62;
+      const z = -half + j * step + (hash2(i, j, seed + 5) - 0.5) * step * 0.62;
+      px[k] = x;
+      pz[k] = z;
+      const f = landField(x, z, seed);
+      inland[k] = f;
+      const crumple = (hash2(i, j, seed + 7) - 0.5) * 0.55;
+      let h;
+      if (f < 0) h = Math.max(-2.6, f * 0.8);
+      else {
+        const shore = 1.25 * sstep(0, 3.2, f);
+        const reach = sstep(16, 64, f);
+        const ridge = 1 - Math.abs(fbm(x * 0.017, z * 0.017, seed + 23, 3) * 2 - 1);
+        h = shore + reach * Math.pow(ridge, 1.5) * 25 + crumple * sat(f / 3) * (0.6 + reach * 2.4);
+      }
+      // Level the town, softly blending out into the hills around it.
+      const tx = Math.max(TOWN.x0 - x, x - TOWN.x1, 0);
+      const tz = Math.max(TOWN.z0 - z, z - TOWN.z1, 0);
+      const town = 1 - sstep(0, 22, Math.hypot(tx, tz));
+      if (f > 1.5 && town > 0) h = mix(h, 1.45 + crumple * 0.3, town);
+
+      const bw = breakwaterField(x, z);
+      if (bw > 0 && bw > f) {
+        h = Math.max(h, 1.15 + crumple);
+        surf[k] = 1;
+      } else if (f < 0) {
+        h = Math.min(h, -0.5);
+      }
+      for (const fe of features) {
+        const d = Math.hypot(x - fe.x, z - fe.z);
+        if (d > fe.r * 1.5) continue;
+        const wob = (fbm(x * 0.11, z * 0.11, fe.s, 2) - 0.5) * fe.r * 0.9;
+        const inner = fe.r - d + wob;
+        if (fe.kind === 'ice') {
+          h = inner > 0 ? 0.42 + crumple * 0.14 : -1.2;
+          surf[k] = 2;
+        } else {
+          h = inner > 0 ? 0.9 + Math.min(inner, fe.r * 0.6) * (0.45 + hash2(i, j, fe.s) * 0.3) : -1.6;
+          surf[k] = 1;
+        }
+      }
+      py[k] = h;
+    }
   }
 
-  const n = Math.round(size / CFG.sdfCell);
+  // Rasterise those triangles into a fine height grid for lookups and the SDF.
   const cell = CFG.sdfCell;
-  const mask = new Uint8Array(n * n);
-  for (const isl of islands) {
-    const x0 = Math.max(0, Math.floor((isl.minX + half) / cell));
-    const x1 = Math.min(n - 1, Math.ceil((isl.maxX + half) / cell));
-    const z0 = Math.max(0, Math.floor((isl.minZ + half) / cell));
-    const z1 = Math.min(n - 1, Math.ceil((isl.maxZ + half) / cell));
+  const n = Math.round(size / cell);
+  const fine = new Float32Array(n * n).fill(-3);
+  const fillTri = (a, b, c) => {
+    const ax = px[a];
+    const az = pz[a];
+    const bx = px[b];
+    const bz = pz[b];
+    const cx = px[c];
+    const cz = pz[c];
+    const det = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+    if (Math.abs(det) < 1e-6) return;
+    const x0 = Math.max(0, Math.ceil((Math.min(ax, bx, cx) + half) / cell));
+    const x1 = Math.min(n - 1, Math.floor((Math.max(ax, bx, cx) + half) / cell));
+    const z0 = Math.max(0, Math.ceil((Math.min(az, bz, cz) + half) / cell));
+    const z1 = Math.min(n - 1, Math.floor((Math.max(az, bz, cz) + half) / cell));
     for (let gz = z0; gz <= z1; gz++) {
+      const wz = gz * cell - half;
       for (let gx = x0; gx <= x1; gx++) {
-        if (islandHeight(isl, gx * cell - half, gz * cell - half) > 0) mask[gz * n + gx] = 1;
+        const wx = gx * cell - half;
+        const u = ((bz - cz) * (wx - cx) + (cx - bx) * (wz - cz)) / det;
+        const v = ((cz - az) * (wx - cx) + (ax - cx) * (wz - cz)) / det;
+        const w = 1 - u - v;
+        if (u < -1e-4 || v < -1e-4 || w < -1e-4) continue;
+        fine[gz * n + gx] = u * py[a] + v * py[b] + w * py[c];
+      }
+    }
+  };
+  for (let j = 0; j < nv - 1; j++) {
+    for (let i = 0; i < nv - 1; i++) {
+      const a = j * nv + i;
+      const b = a + 1;
+      const d = a + nv;
+      const e = d + 1;
+      if (Math.max(py[a], py[b], py[d], py[e]) < -0.01) continue;
+      // Alternating diagonals keep the grid from showing through as stripes.
+      if ((i + j) % 2) {
+        fillTri(a, d, b);
+        fillTri(b, d, e);
+      } else {
+        fillTri(a, d, e);
+        fillTri(a, e, b);
       }
     }
   }
+  const mask = new Uint8Array(n * n);
+  for (let i = 0; i < n * n; i++) mask[i] = fine[i] > 0 ? 1 : 0;
   const sdf = distanceTransform(mask, n, cell);
 
   const densitySeed = seed + 991;
@@ -263,43 +277,50 @@ export function generateWorld(seed) {
     return sat((v - 0.3) / 0.42);
   };
 
-  const shoreDistance = (x, z) => {
+  const bilinear = (grid, x, z, outside) => {
     const fx = (x + half) / cell;
     const fz = (z + half) / cell;
     const ix = Math.floor(fx);
     const iz = Math.floor(fz);
-    if (ix < 0 || iz < 0 || ix >= n - 1 || iz >= n - 1) return CFG.sdfMax;
+    if (ix < 0 || iz < 0 || ix >= n - 1 || iz >= n - 1) return outside;
     const u = fx - ix;
     const v = fz - iz;
-    const a = sdf[iz * n + ix];
-    const b = sdf[iz * n + ix + 1];
-    const c = sdf[(iz + 1) * n + ix];
-    const d = sdf[(iz + 1) * n + ix + 1];
+    const a = grid[iz * n + ix];
+    const b = grid[iz * n + ix + 1];
+    const c = grid[(iz + 1) * n + ix];
+    const d = grid[(iz + 1) * n + ix + 1];
     return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
   };
+  const shoreDistance = (x, z) => bilinear(sdf, x, z, CFG.sdfMax);
+  const heightAt = (x, z) => bilinear(fine, x, z, -3);
 
-  const heightAt = (x, z) => {
-    let h = -0.6;
-    for (const isl of islands) {
-      const v = islandHeight(isl, x, z);
-      if (v > h) h = v;
-    }
-    return h;
+  // Berth on the east side of the long pier. The pier is a real obstacle for the
+  // ship, but not part of the shoreline, so it gets no foam line of its own.
+  const pier = { x0: -1.7, x1: 1.7, z0: -26, z1: 0 };
+  const port = { x: 6.2, z: -18.5, heading: Math.PI, pier };
+  const navDistance = (x, z) => {
+    const dx = Math.max(pier.x0 - x, x - pier.x1, 0);
+    const dz = Math.max(pier.z0 - z, z - pier.z1, 0);
+    return Math.min(shoreDistance(x, z), Math.hypot(dx, dz));
   };
 
   return {
     seed,
     size,
     half,
-    islands,
     n,
     cell,
     mask,
     sdf,
+    fine,
+    features,
+    mesh: { nv, px, py, pz, inland, surf, step },
     density,
     shoreDistance,
+    navDistance,
     heightAt,
-    // The berth sits beside the pier head; the pier is decoration, not collision.
-    port: { x: 15.5, z: 42, heading: 0, pierX: 8, pierStartZ: 22, pierEndZ: 44 },
+    // Where the ship may sail. North of the mesh there is only open sea.
+    bounds: { x0: -half + 6, x1: half - 6, z0: -630, z1: half - 6 },
+    port,
   };
 }

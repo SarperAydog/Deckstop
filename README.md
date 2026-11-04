@@ -24,17 +24,19 @@ npm test
 | Input | Action |
 | --- | --- |
 | W / S | Shift gear up / down (W also sets sail from port) |
-| A / D | Turn |
+| A / D | Turn the wheel. It stays where you leave it |
+| X | Centre the wheel |
 | Space | Neutral and brake |
 | E | Drop cage |
 | F | Haul a cage by hand (minigame) |
 | C | Let the deckhand haul |
 | P | Dock / open the harbour |
 | R | Radar heatmap |
-| M | Chart and chained orders (large window) |
+| M | Chart: cage management, waypoint, chained orders (large window) |
 | G / H | Return to chain / sail home (needs a captain) |
 | T | Call the tow ship when out of fuel |
 | V | Voyage plan |
+| Esc | Close the top panel, or pause |
 | 1 / 2 / 3 | Taskbar / small / large window |
 | Right-drag, wheel | Rotate camera, zoom |
 
@@ -42,8 +44,19 @@ npm test
 
 - `src/config.js`: every balance number.
 - `src/sim/`: the rules (world, navigation, game). No three.js or DOM, tested from Node.
-- `src/render/`: the scene (terrain, water shader, ship, particles, camera, post effect).
-- `src/ui/`: HUD, port, chart, minigame, taskbar strip, screen modes.
+- `src/render/`: the scene (terrain, town, voxel light, water shader, ships, portraits, particles, camera, post effect).
+- `src/ui/`: menus and harbour (hud), bridge console (dash), chart, minigame, taskbar strip, screen modes.
+
+## Look
+
+The techniques come from Oskar Stålberg's talk [Developing The Bad North Look](https://www.youtube.com/watch?v=6JcFbivo8dQ) (Konsoll 2018):
+
+- **Voxel light:** the whole world is copied to a low-res voxel grid, swept top-down so each voxel averages the ones above it, and stored in a 3D texture that everything samples for soft AO. There are no cast shadows.
+- **Voxel normals:** trees borrow the volume's normals, so a stand of trees lights as one mass.
+- **Inverted hull:** models are drawn again inside out, one pixel larger, in a darker tone of their own colour.
+- **ddy shadow:** a one-pixel shadow under the crisp snow edge, in a single shader pass.
+- **Mirrored meshes:** reflections are the real geometry, flipped, near uniform in colour, and rippled by the water shader.
+- **Borders, not textures:** flat areas stay calm; the detail sits at the shoreline and the snow line.
 
 ## Choices the design draft left open
 

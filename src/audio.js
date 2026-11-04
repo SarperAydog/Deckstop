@@ -3,6 +3,7 @@ export class Audio {
   constructor() {
     this.ctx = null;
     this.muted = false;
+    this.volume = 0.8;
     this.sea = null;
   }
 
@@ -15,14 +16,14 @@ export class Audio {
     if (!AC) return;
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.8;
+    this.master.gain.value = this.volume;
     this.master.connect(this.ctx.destination);
     this.startSea();
   }
 
-  setMuted(m) {
-    this.muted = m;
-    if (this.master) this.master.gain.value = m ? 0 : 0.8;
+  setVolume(v) {
+    this.volume = v;
+    if (this.master) this.master.gain.value = v;
   }
 
   noiseBuffer(seconds) {
@@ -122,6 +123,23 @@ export class Audio {
   miss() {
     this.tone(150, 0.25, 'square', 0.07, 0, 90);
   }
+  // A brittle crack and a slosh when the bow breaks a floe.
+  ice(r = 1) {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer(0.3);
+    const band = this.ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 2600 - Math.min(r, 5) * 260;
+    band.Q.value = 1.2;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.14 + Math.min(r, 5) * 0.02, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+    src.connect(band).connect(gain).connect(this.master);
+    src.start(now);
+  }
+
   click() {
     this.tone(520, 0.05, 'triangle', 0.05);
   }

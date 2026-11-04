@@ -20,7 +20,7 @@ export class Flecks {
     scene.add(this.mesh);
   }
 
-  spawn(x, z, vx, vz, life, w, l, rot, y = 0.06, vy = 0) {
+  spawn(x, z, vx, vz, life, w, l, rot, y = 0.14, vy = 0) {
     const it = this.items[this.head];
     this.head = (this.head + 1) % this.max;
     Object.assign(it, { x, y, z, vx, vy, vz, life, maxLife: life, w, l, rot });
@@ -67,7 +67,7 @@ export class Wake {
     this.flecks = flecks;
     this.timer = 0;
   }
-  update(x, z, heading, speed, dt) {
+  update(x, z, heading, speed, dt, length = 6) {
     const sp = Math.abs(speed);
     if (sp < 0.5) return;
     this.timer += dt * (5 + sp * 3.2);
@@ -78,8 +78,8 @@ export class Wake {
     while (this.timer > 1) {
       this.timer -= 1;
       const side = Math.random() < 0.5 ? -1 : 1;
-      const back = speed > 0 ? -2.9 : 2.8;
-      const out = 0.75 + Math.random() * 0.3;
+      const back = (speed > 0 ? -0.5 : 0.48) * length;
+      const out = length * 0.13 + Math.random() * 0.3;
       const spread = 0.3 + Math.random() * 0.7;
       this.flecks.spawn(
         x + fx * back + rx * side * out,
@@ -168,5 +168,57 @@ export class Snow {
       pos[i * 3 + 2] = fz + z;
     }
     this.mesh.geometry.attributes.position.needsUpdate = true;
+  }
+}
+
+// Gulls wheel over the harbour and follow the ship for a while, a simple V that
+// flaps by squashing its wings. Movement matters here, not the model.
+export class Gulls {
+  constructor(scene, material, count = 18) {
+    const pos = [0, 0, 0.16, -0.72, 0.22, -0.02, 0, 0, -0.16, 0, 0, 0.16, 0, 0, -0.16, 0.72, 0.22, -0.02];
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    const col = new Float32Array(18).fill(1);
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.computeVertexNormals();
+    this.mesh = new THREE.InstancedMesh(geo, material, count);
+    this.mesh.frustumCulled = false;
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.birds = Array.from({ length: count }, (_, i) => ({
+      r: 8 + (i * 37) % 17,
+      a: i * 2.1,
+      v: (0.28 + ((i * 13) % 9) * 0.03) * (i % 2 ? 1 : -1),
+      h: 5 + (i * 7) % 6,
+      flap: 5 + (i % 4),
+      chase: i % 3 === 0,
+      cx: 0,
+      cz: 0,
+    }));
+    scene.add(this.mesh);
+  }
+
+  update(time, dt, portX, portZ, shipX, shipZ) {
+    this.birds.forEach((b, i) => {
+      const tx = b.chase ? shipX : portX;
+      const tz = b.chase ? shipZ : portZ;
+      if (b.cx === 0 && b.cz === 0) {
+        b.cx = tx;
+        b.cz = tz;
+      }
+      const k = 1 - Math.exp(-dt * 0.35);
+      b.cx += (tx - b.cx) * k;
+      b.cz += (tz - b.cz) * k;
+      b.a += b.v * dt;
+      const x = b.cx + Math.cos(b.a) * b.r;
+      const z = b.cz + Math.sin(b.a) * b.r;
+      const glide = Math.sin(time * 0.6 + i) > 0.1;
+      const s = glide ? 0.5 : Math.sin(time * b.flap + i) * 0.9;
+      dummy.position.set(x, b.h + Math.sin(time * 0.5 + i) * 0.7, z);
+      dummy.rotation.set(0, -b.a + (b.v > 0 ? 0 : Math.PI), 0);
+      dummy.scale.set(0.9, s, 0.9);
+      dummy.updateMatrix();
+      this.mesh.setMatrixAt(i, dummy.matrix);
+    });
+    this.mesh.instanceMatrix.needsUpdate = true;
   }
 }

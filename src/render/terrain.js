@@ -1,315 +1,460 @@
-// Islands: soft-edged stacked plateaus with cream cliffs, a thin coloured top and
-// near-black tree masses, in the spirit of hand-built miniature dioramas.
+// The mainland: one big faceted snowfield. Almost no colour lives inside an area;
+// the interest is at the borders, where snow breaks over grey rock with a crisp edge
+// and a one-pixel shadow underneath (a ddy trick straight from Bad North's shaders).
 import * as THREE from 'three';
-import { islandHeight, rng, fbm } from '../sim/world.js';
-import { box, blob, cone, cyl, gable, merged, place } from './kit.js';
-import { withMist } from './mist.js';
+import { fbm } from '../sim/world.js';
+import { stylize } from './mist.js';
+import { waveHeight, waveState } from './water.js';
 
-const PALETTES = {
-  sage: { top: '#a9bb95', top2: '#8ea684', cliff: '#ece9dd', shade: '#a7b5ba', wet: '#c4cfb3', tree: '#27493f', tree2: '#1f3d36', conifer: false },
-  rust: { top: '#cb9c83', top2: '#b98771', cliff: '#e8dfd3', shade: '#ab9ea6', wet: '#d6b6a1', tree: '#3a2b3e', tree2: '#2d2233', conifer: true },
-  moss: { top: '#b7bb8a', top2: '#9fa679', cliff: '#e9e6d6', shade: '#a6adab', wet: '#cdcfa6', tree: '#2f4a3a', tree2: '#233b2f', conifer: true },
-  ice: { top: '#f5f7f6', top2: '#e7eff0', cliff: '#dcecef', shade: '#a2c2cd', wet: '#e9f3f3', tree: '#2f4a4a', tree2: '#233b3b', conifer: true },
+const hash = (i, j) => {
+  const h = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+  return h - Math.floor(h);
 };
 
-const c = {
-  top: new THREE.Color(),
-  top2: new THREE.Color(),
-  cliff: new THREE.Color(),
-  shade: new THREE.Color(),
-  wet: new THREE.Color(),
-  snow: new THREE.Color('#f4f5f1'),
-  out: new THREE.Color(),
-};
+const SNOW = new THREE.Color('#f1f4f7');
+const ICE = new THREE.Color('#e8f3f6');
 
-function islandPalette(isl) {
-  if (isl.kind === 'port') return PALETTES.sage;
-  if (isl.kind === 'ice') return PALETTES.ice;
-  const r = rng(isl.seed + 3)();
-  return r < 0.4 ? PALETTES.sage : r < 0.7 ? PALETTES.rust : PALETTES.moss;
+export function terrainMaterial() {
+  return stylize(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+    key: 'terrain',
+    uniforms: { uRock: { value: new THREE.Color('#8794a6') } },
+    vert: 'attribute float aSnow; varying float vSnow;',
+    vertBody: 'vSnow = aSnow;',
+    frag: 'varying float vSnow; uniform vec3 uRock;',
+    fragColor: /* glsl */ `
+      float fw = max(fwidth(vSnow), 0.001);
+      float sn = smoothstep(0.5 - fw * 0.7, 0.5 + fw * 0.7, vSnow);
+      float soft = smoothstep(0.5 - fw * 1.6, 0.5 + fw * 1.6, vSnow);
+      diffuseColor.rgb = mix(uRock, diffuseColor.rgb, sn);
+      // A pixel just below the snow's edge falls into its little shadow.
+      diffuseColor.rgb *= 1.0 - clamp(dFdy(soft) * 1.6, 0.0, 0.42);
+    `,
+  });
 }
 
-function buildIslandMesh(isl, pal, material) {
-  const step = 0.55;
-  const x0 = isl.minX;
-  const z0 = isl.minZ;
-  const nx = Math.ceil((isl.maxX - isl.minX) / step) + 1;
-  const nz = Math.ceil((isl.maxZ - isl.minZ) / step) + 1;
-  const hs = new Float32Array(nx * nz);
-  for (let iz = 0; iz < nz; iz++) {
-    for (let ix = 0; ix < nx; ix++) hs[iz * nx + ix] = islandHeight(isl, x0 + ix * step, z0 + iz * step);
+export function buildTerrainGeometry(world) {
+  const { nv, px, py, pz, surf } = world.mesh;
+  const seed = world.seed;
+
+  // How snowy each vertex is: steep or wind-scoured ground turns to rock.
+  const snow = new Float32Array(nv * nv);
+  for (let j = 0; j < nv; j++) {
+    for (let i = 0; i < nv; i++) {
+      const k = j * nv + i;
+      if (surf[k] === 2) {
+        snow[k] = 1;
+        continue;
+      }
+      if (surf[k] === 1) {
+        snow[k] = py[k] > 3.5 && hash(i, j) > 0.45 ? 1 : 0;
+        continue;
+      }
+      let slope = 0;
+      if (i > 0 && j > 0 && i < nv - 1 && j < nv - 1) {
+        slope = Math.max(
+          Math.abs(py[k + 1] - py[k - 1]),
+          Math.abs(py[k + nv] - py[k - nv]),
+          Math.abs(py[k + 1 + nv] - py[k - 1 - nv]),
+        ) / 6;
+      }
+      const scour = fbm(px[k] * 0.06, pz[k] * 0.06, seed + 41, 2);
+      snow[k] = Math.min(1, Math.max(0, 1.25 - slope * 1.25 - Math.max(0, scour - 0.62) * 3));
+    }
   }
 
-  const vid = new Int32Array(nx * nz).fill(-1);
-  const indices = [];
-  const positions = [];
-  const addV = (ix, iz) => {
-    const k = iz * nx + ix;
-    if (vid[k] < 0) {
-      vid[k] = positions.length / 3;
-      positions.push(x0 + ix * step, hs[k], z0 + iz * step);
-    }
-    return vid[k];
+  const pos = [];
+  const col = [];
+  const att = [];
+  const tri = (a, b, c, i, j, v) => {
+    pos.push(px[a], py[a], pz[a], px[b], py[b], pz[b], px[c], py[c], pz[c]);
+    att.push(snow[a], snow[b], snow[c]);
+    // The faintest tone shift per facet: enough to read as planes, never as noise.
+    const t = 0.975 + hash(i + v * 7, j) * 0.025;
+    const base = surf[a] === 2 ? ICE : SNOW;
+    for (let n = 0; n < 3; n++) col.push(base.r * t, base.g * t, base.b * t);
   };
-  for (let iz = 0; iz < nz - 1; iz++) {
-    for (let ix = 0; ix < nx - 1; ix++) {
-      const a = hs[iz * nx + ix];
-      const b = hs[iz * nx + ix + 1];
-      const d = hs[(iz + 1) * nx + ix];
-      const e = hs[(iz + 1) * nx + ix + 1];
-      if (Math.max(a, b, d, e) < -0.2) continue;
-      const va = addV(ix, iz);
-      const vb = addV(ix + 1, iz);
-      const vd = addV(ix, iz + 1);
-      const ve = addV(ix + 1, iz + 1);
-      indices.push(va, vd, vb, vb, vd, ve);
-    }
-  }
-  if (!indices.length) return null;
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-
-  c.top.set(pal.top);
-  c.top2.set(pal.top2);
-  c.cliff.set(pal.cliff);
-  c.shade.set(pal.shade);
-  c.wet.set(pal.wet);
-
-  const nor = geo.attributes.normal;
-  const colors = new Float32Array(positions.length);
-  for (let iz = 0; iz < nz; iz++) {
-    for (let ix = 0; ix < nx; ix++) {
-      const k = iz * nx + ix;
-      const id = vid[k];
-      if (id < 0) continue;
-      const h = hs[k];
-      const x = x0 + ix * step;
-      const z = z0 + iz * step;
-      // Baked occlusion: darker where taller ground stands close by.
-      let around = 0;
-      let count = 0;
-      for (const [dx, dz] of [[-3, 0], [3, 0], [0, -3], [0, 3], [-2, -2], [2, 2], [-2, 2], [2, -2]]) {
-        const jx = ix + dx;
-        const jz = iz + dz;
-        if (jx < 0 || jz < 0 || jx >= nx || jz >= nz) continue;
-        around += Math.max(0, hs[jz * nx + jx] - h);
-        count++;
-      }
-      const ao = Math.min(1, count ? (around / count) * 0.75 : 0);
-      const up = nor.getY(id);
-      const flat = THREE.MathUtils.smoothstep(up, 0.62, 0.88);
-      const patch = fbm(x * 0.13, z * 0.13, isl.seed + 5, 3);
-      c.out.copy(c.top).lerp(c.top2, THREE.MathUtils.smoothstep(patch, 0.42, 0.62));
-      // Old snow lingers on high ground: it keeps every island reading as Arctic.
-      const snow = THREE.MathUtils.smoothstep(h + patch * 3.4, 6.2, 8.2);
-      c.out.lerp(c.snow, snow);
-      if (h < 0.42) c.out.lerp(c.wet, 0.8);
-      c.out.lerp(c.cliff, 1 - flat);
-      c.out.lerp(c.shade, ao * (flat > 0.5 ? 0.55 : 0.9));
-      colors[id * 3] = c.out.r;
-      colors[id * 3 + 1] = c.out.g;
-      colors[id * 3 + 2] = c.out.b;
-    }
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const mesh = new THREE.Mesh(geo, material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function flatEnough(isl, x, z, reach = 1.3) {
-  const h = islandHeight(isl, x, z);
-  if (h < 0.3) return null;
-  for (const [dx, dz] of [[reach, 0], [-reach, 0], [0, reach], [0, -reach]]) {
-    if (Math.abs(islandHeight(isl, x + dx, z + dz) - h) > 0.28) return null;
-  }
-  return h;
-}
-
-function house(parts, x, y, z, ry, w, d, h, wall = '#f3efe5', roof = '#c6ad9f') {
-  parts.push(place(box(w, h, d, wall), x, y + h / 2, z, ry));
-  parts.push(place(gable(w * 1.2, w * 0.62, d * 1.08, roof), x, y + h, z, ry));
-  const cz = Math.cos(ry);
-  const sz = Math.sin(ry);
-  parts.push(place(box(0.34, 0.75, 0.04, '#6d5a5c'), x + sz * (d / 2 + 0.01), y + 0.38, z + cz * (d / 2 + 0.01), ry));
-  parts.push(place(box(0.3, 0.3, 0.04, '#596a73'), x + sz * (d / 2 + 0.01) + cz * w * 0.26, y + h * 0.62, z + cz * (d / 2 + 0.01) - sz * w * 0.26, ry));
-}
-
-function forest(parts, isl, pal, rand, count, zones = null) {
-  const blobs = zones ?? isl.blobs.filter((b) => b.level > 1);
-  if (!blobs.length) return;
-  for (let i = 0; i < count; i++) {
-    const b = blobs[Math.floor(rand() * blobs.length)];
-    const cx = b.x + (rand() - 0.5) * b.hx * 1.5;
-    const cz = b.z + (rand() - 0.5) * b.hz * 1.5;
-    const trees = 5 + Math.floor(rand() * 16);
-    for (let t = 0; t < trees; t++) {
-      const x = cx + (rand() - 0.5) * 8;
-      const z = cz + (rand() - 0.5) * 7;
-      const h = flatEnough(isl, x, z, 0.9);
-      if (h === null) continue;
-      const col = rand() < 0.5 ? pal.tree : pal.tree2;
-      if (pal.conifer) {
-        const tall = 1.7 + rand() * 1.9;
-        parts.push(place(cone(0.72 + rand() * 0.25, tall, 7, col), x, h + tall / 2, z, rand() * 3));
+  for (let j = 0; j < nv - 1; j++) {
+    for (let i = 0; i < nv - 1; i++) {
+      const a = j * nv + i;
+      const b = a + 1;
+      const d = a + nv;
+      const e = d + 1;
+      if (Math.max(py[a], py[b], py[d], py[e]) < -0.01) continue;
+      if ((i + j) % 2) {
+        tri(a, d, b, i, j, 0);
+        tri(b, d, e, i, j, 1);
       } else {
-        const r = 0.8 + rand() * 0.7;
-        parts.push(place(blob(r, col), x, h + r * 0.62, z, 0, 1, 0.82, 1));
+        tri(a, d, e, i, j, 0);
+        tri(a, e, b, i, j, 1);
       }
     }
   }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('aSnow', new THREE.Float32BufferAttribute(att, 1));
+  g.computeVertexNormals();
+  return g;
 }
 
-function shrubs(parts, isl, pal, rand, count) {
-  const shrub = isl.kind === 'ice' ? null : pal.top2;
-  for (let i = 0; i < count; i++) {
-    const x = isl.minX + rand() * (isl.maxX - isl.minX);
-    const z = isl.minZ + rand() * (isl.maxZ - isl.minZ);
-    const h = islandHeight(isl, x, z);
-    if (h < 0.35) {
-      // Dark boulders collect along the shoreline.
-      if (h > -0.4 && rand() < 0.5) {
-        const r = 0.3 + rand() * 0.55;
-        parts.push(place(blob(r, '#4c4a55', 0), x, h + r * 0.3, z, rand() * 6, 1, 0.7, 1));
+// Loose floes small enough for the ship to shoulder aside.
+export class Floes {
+  constructor(scene, world, material, crackedMaterial, onBreak) {
+    this.world = world;
+    this.onBreak = onBreak;
+    this.time = 0;
+    const shape = (seed, sides) => {
+      const pts = [];
+      for (let i = 0; i < sides; i++) {
+        const a = (i / sides) * Math.PI * 2;
+        pts.push([Math.cos(a) * (0.72 + hash(seed, i) * 0.5), -Math.sin(a) * (0.72 + hash(i, seed) * 0.5)]);
       }
-      continue;
+      return pts;
+    };
+    const pos = [];
+    const col = [];
+    const white = new THREE.Color('#f6f9fa');
+    const shade = new THREE.Color('#dbe9ee');
+    const skirt = new THREE.Color('#79c0c2');
+    const push = (p, c) => {
+      pos.push(...p);
+      col.push(c.r, c.g, c.b);
+    };
+    const pts = shape(3, 8);
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const [ax, az] = pts[i];
+      const [bx, bz] = pts[(i + 1) % n];
+      // Pale submerged skirt, side wall, then a very slightly domed top.
+      push([ax * 1.2, 0.015, az * 1.2], skirt);
+      push([bx * 1.2, 0.015, bz * 1.2], skirt);
+      push([0, 0.015, 0], skirt);
+      push([ax, 0.02, az], shade);
+      push([bx, 0.02, bz], shade);
+      push([bx * 0.97, 0.16, bz * 0.97], shade);
+      push([ax, 0.02, az], shade);
+      push([bx * 0.97, 0.16, bz * 0.97], shade);
+      push([ax * 0.97, 0.16, az * 0.97], shade);
+      push([ax * 0.97, 0.16, az * 0.97], white);
+      push([bx * 0.97, 0.16, bz * 0.97], white);
+      push([0.1, 0.22, -0.08], white);
     }
-    if (shrub && flatEnough(isl, x, z, 0.5) !== null) {
-      const r = 0.22 + rand() * 0.32;
-      const dark = new THREE.Color(shrub).multiplyScalar(0.72).getStyle();
-      parts.push(place(blob(r, dark, 0), x, h + r * 0.4, z, rand() * 6, 1, 0.75, 1));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.computeVertexNormals();
+
+    this.items = [];
+    let rs = world.seed % 233280;
+    const rnd = () => {
+      rs = (rs * 9301 + 49297) % 233280;
+      return rs / 233280;
+    };
+    const b = world.bounds;
+    for (let i = 0; i < 4200 && this.items.length < 900; i++) {
+      const x = b.x0 + rnd() * (b.x1 - b.x0);
+      const z = b.z0 + rnd() * (b.z1 - b.z0);
+      const big = rnd();
+      const r = big > 0.9 ? 2.4 + rnd() * 2.6 : 0.5 + rnd() * 1.3;
+      const d = world.shoreDistance(x, z);
+      if (d < r + 1.5) continue;
+      if (Math.abs(x - world.port.x) < 9 + r && z > world.port.pier.z0 - 16 && z < 0) continue;
+      this.items.push({ x, z, r, ry: rnd() * 6.28, sx: 0.8 + rnd() * 0.5, alive: true, grow: 1, respawnAt: 0, homeX: x, homeZ: z });
     }
-  }
-}
+    this.mesh = new THREE.InstancedMesh(geo, material, this.items.length);
+    this.mesh.frustumCulled = false;
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.dummy = new THREE.Object3D();
+    this.items.forEach((_, i) => this.write(i));
+    scene.add(this.mesh);
 
-function portDecor(parts, world, isl) {
-  const { pierX, pierStartZ, pierEndZ } = world.port;
-  const plank = '#6b5656';
-  const pierLen = pierEndZ - pierStartZ;
-  parts.push(place(box(4, 0.22, pierLen, plank), pierX, 0.78, (pierStartZ + pierEndZ) / 2));
-  for (let z = pierStartZ + 1; z <= pierEndZ; z += 3.6) {
-    for (const dx of [-1.85, 1.85]) parts.push(place(cyl(0.17, 0.17, 2.1, 6, '#4a3c42'), pierX + dx, 0.2, z));
-  }
-  // Crates and rope bollards on the pier head.
-  parts.push(place(box(1, 0.8, 1, '#a68a70'), pierX - 1, 1.3, pierEndZ - 2));
-  parts.push(place(box(0.8, 0.6, 0.8, '#94785f'), pierX - 0.9, 1.2, pierEndZ - 3.2, 0.4));
-  parts.push(place(cyl(0.16, 0.2, 0.5, 6, '#2d2a33'), pierX + 1.6, 1.15, pierEndZ - 1.2));
-
-  // A little harbour crane.
-  parts.push(place(box(0.5, 4, 0.5, '#544750'), pierX + 1, 2.9, pierStartZ + 7));
-  parts.push(place(box(0.34, 0.34, 5, '#544750'), pierX + 1.8, 4.9, pierStartZ + 8.5, 1.1));
-
-  // The harbour village on the lower plateau.
-  const houses = [
-    [6, 2, 0.2, 3.6, 3.1, 2.1],
-    [13, 3, -0.3, 3, 3.8, 1.9],
-    [20, 4, 1.4, 3, 3, 1.9],
-    [-2, 5, 0.1, 3.2, 3.4, 2],
-    [-16, 3, 1.5, 3, 3.4, 1.8],
-    [-22, -4, 0.2, 2.8, 3, 1.8],
-    [9, -8, 1.2, 3.4, 3, 2],
-  ];
-  for (const [x, z, ry, w, d, h] of houses) {
-    const y = islandHeight(isl, x, z);
-    const roof = Math.abs(x) % 3 < 1 ? '#b86a56' : '#c6ad9f';
-    house(parts, x, y - 0.1, z, ry, w, d, h, '#f4f0e6', roof);
+    // Kept for cracking: the outline every floe is drawn from, and its colours.
+    this.outline = pts;
+    this.tones = { white, shade, skirt, inner: new THREE.Color('#c4dfe7') };
+    this.crackedMaterial = crackedMaterial;
+    this.scene = scene;
+    this.broken = [];
+    this.maxBroken = 40;
   }
 
-  // The chapel on the upper terrace: the island's landmark.
-  {
-    const x = -11;
-    const z = -9;
-    const y = islandHeight(isl, x, z) - 0.1;
-    house(parts, x, y, z, 0.35, 4.2, 6.6, 2.8);
-    const tx = x - 2.3;
-    const tz = z - 2.6;
-    parts.push(place(box(2.4, 5.8, 2.4, '#f6f2e8'), tx, y + 2.9, tz, 0.35));
-    parts.push(place(cone(1.9, 2.2, 4, '#b86a56'), tx, y + 6.9, tz, 0.35 + Math.PI / 4));
-    parts.push(place(box(0.5, 0.9, 0.05, '#596a73'), tx + 0.42, y + 4.2, tz + 1.14, 0.35));
+  write(i) {
+    const it = this.items[i];
+    const d = this.dummy;
+    d.position.set(it.x, it.y ?? 0, it.z);
+    d.rotation.y = it.ry;
+    const g = it.alive ? it.grow : 0;
+    d.scale.set(it.r * it.sx * g + 1e-4, (1 + it.r * 0.12) * g + 1e-4, it.r * g + 1e-4);
+    d.updateMatrix();
+    this.mesh.setMatrixAt(i, d.matrix);
   }
 
-  // A striped lighthouse on the seaward knoll.
-  {
-    const x = 17;
-    const z = -11;
-    const y = islandHeight(isl, x, z) - 0.1;
-    parts.push(place(cyl(0.9, 1.25, 2, 10, '#f4f0e6'), x, y + 1, z));
-    parts.push(place(cyl(0.82, 0.9, 1.3, 10, '#b5473f'), x, y + 2.65, z));
-    parts.push(place(cyl(0.72, 0.82, 1.3, 10, '#f4f0e6'), x, y + 3.95, z));
-    parts.push(place(cyl(0.5, 0.5, 0.6, 8, '#f6d98c'), x, y + 4.9, z));
-    parts.push(place(cone(0.82, 0.8, 10, '#3f3540'), x, y + 5.6, z));
-  }
-}
-
-export function buildWorldMeshes(world) {
-  const group = new THREE.Group();
-  const terrainMat = withMist(new THREE.MeshLambertMaterial({ vertexColors: true }));
-  const decorMat = withMist(new THREE.MeshLambertMaterial({ vertexColors: true }));
-
-  for (const isl of world.islands) {
-    const pal = islandPalette(isl);
-    const mesh = buildIslandMesh(isl, pal, terrainMat);
-    if (mesh) group.add(mesh);
-
-    const rand = rng(isl.seed + 11);
-    const parts = [];
-    const area = (isl.maxX - isl.minX) * (isl.maxZ - isl.minZ);
-    if (isl.kind === 'port') {
-      portDecor(parts, world, isl);
-      // Tree mass behind the village, kept clear of the houses.
-      const zones = [{ x: -19, z: 7, hx: 9, hz: 4 }, { x: 22, z: 12, hx: 6, hz: 5 }, { x: 4, z: -15, hx: 6, hz: 2.5 }];
-      forest(parts, isl, pal, rand, 6, zones);
-    } else if (isl.kind === 'wild') {
-      forest(parts, isl, pal, rand, Math.min(5, 1 + Math.floor(area / 900)));
-      if (rand() < 0.3) {
-        const b = isl.blobs[isl.blobs.length - 1];
-        const h = flatEnough(isl, b.x, b.z, 2);
-        if (h !== null) house(parts, b.x, h - 0.1, b.z, rand() * 3, 2.8, 3.2, 1.8);
+  // Cuts the floe's outline with a jittered grid of Voronoi cells, so cracks run
+  // irregularly across it. Bigger floes break into more, similar-sized pieces.
+  shatterCells(r, ry, sx) {
+    const c = Math.cos(ry);
+    const s = Math.sin(ry);
+    // The outline in world units, relative to the floe's centre.
+    const shape = this.outline.map(([x, z]) => {
+      const lx = x * 0.97 * r * sx;
+      const lz = z * 0.97 * r;
+      return [lx * c + lz * s, -lx * s + lz * c];
+    });
+    const cell = 1.15 + Math.random() * 0.35;
+    const reach = r * 1.35;
+    const seeds = [];
+    for (let gz = -reach; gz <= reach; gz += cell) {
+      for (let gx = -reach; gx <= reach; gx += cell) {
+        const a = gx + (Math.random() - 0.5) * cell * 0.85;
+        const b = gz + (Math.random() - 0.5) * cell * 0.85;
+        let inside = false;
+        for (let i = 0, j = shape.length - 1; i < shape.length; j = i++) {
+          const [xi, zi] = shape[i];
+          const [xj, zj] = shape[j];
+          if (zi > b !== zj > b && a < ((xj - xi) * (b - zi)) / (zj - zi) + xi) inside = !inside;
+        }
+        if (inside) seeds.push([a, b]);
       }
     }
-    shrubs(parts, isl, pal, rand, isl.kind === 'ice' ? 6 : Math.floor(area / 14));
-    if (parts.length) {
-      const decor = new THREE.Mesh(merged(parts), decorMat);
-      decor.castShadow = true;
-      decor.receiveShadow = true;
-      group.add(decor);
+    while (seeds.length > 26) seeds.splice(Math.floor(Math.random() * seeds.length), 1);
+    if (seeds.length < 3) {
+      for (let k = seeds.length; k < 3; k++) {
+        const a = (k / 3) * 6.283 + Math.random();
+        seeds.push([Math.cos(a) * r * 0.45, Math.sin(a) * r * 0.45]);
+      }
+    }
+    const clip = (poly, ax, az, bx, bz) => {
+      // Keeps the side of the bisector nearer to a.
+      const mx = (ax + bx) / 2;
+      const mz = (az + bz) / 2;
+      const nx = bx - ax;
+      const nz = bz - az;
+      const out = [];
+      for (let i = 0; i < poly.length; i++) {
+        const p = poly[i];
+        const q = poly[(i + 1) % poly.length];
+        const dp = (p[0] - mx) * nx + (p[1] - mz) * nz;
+        const dq = (q[0] - mx) * nx + (q[1] - mz) * nz;
+        if (dp <= 0) out.push(p);
+        if (dp < 0 !== dq < 0) {
+          const k = dp / (dp - dq);
+          out.push([p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k]);
+        }
+      }
+      return out;
+    };
+    const cells = [];
+    seeds.forEach((sd, i) => {
+      let poly = shape;
+      seeds.forEach((other, j) => {
+        if (i !== j && poly.length) poly = clip(poly, sd[0], sd[1], other[0], other[1]);
+      });
+      if (poly.length >= 3) cells.push(poly);
+    });
+    return cells;
+  }
+
+  // The floe stays where it is and splits along those cracks. The pieces ease apart,
+  // keep floating for a few seconds, then one by one take on water and go under.
+  crack(it, i, cx, cz, d) {
+    it.alive = false;
+    it.respawnAt = this.time + 45 + Math.random() * 75;
+    this.write(i);
+    if (this.broken.length >= this.maxBroken) this.dropBroken(0);
+    const awayX = d > 1e-3 ? cx / d : 0;
+    const awayZ = d > 1e-3 ? cz / d : 0;
+    const height = 0.16 * (1 + it.r * 0.12);
+    const pos = [];
+    const col = [];
+    const pieces = [];
+    const { white, shade, skirt, inner } = this.tones;
+    const push = (x, y, z, c) => {
+      pos.push(x, y, z);
+      col.push(c.r, c.g, c.b);
+    };
+    for (const poly of this.shatterCells(it.r, it.ry, it.sx)) {
+      const mx = poly.reduce((a, p) => a + p[0], 0) / poly.length;
+      const mz = poly.reduce((a, p) => a + p[1], 0) / poly.length;
+      const start = pos.length;
+      const dome = height * (1 + Math.random() * 0.25);
+      for (let v = 0; v < poly.length; v++) {
+        const [ax, az] = poly[v];
+        const [bx, bz] = poly[(v + 1) % poly.length];
+        // Pale submerged halo, raw broken side, then the top.
+        push(mx + (bx - mx) * 1.12, 0.015, mz + (bz - mz) * 1.12, skirt);
+        push(mx + (ax - mx) * 1.12, 0.015, mz + (az - mz) * 1.12, skirt);
+        push(mx, 0.015, mz, skirt);
+        push(ax, 0.02, az, inner);
+        push(bx, height, bz, shade);
+        push(bx, 0.02, bz, shade);
+        push(ax, 0.02, az, inner);
+        push(ax, height, az, inner);
+        push(bx, height, bz, shade);
+        push(bx, height, bz, white);
+        push(ax, height, az, white);
+        push(mx, dome, mz, white);
+      }
+      pieces.push({
+        mx,
+        mz,
+        start: start / 3,
+        end: pos.length / 3,
+        ox: 0,
+        oz: 0,
+        vx: awayX * 0.14 + (Math.random() - 0.5) * 0.06,
+        vz: awayZ * 0.14 + (Math.random() - 0.5) * 0.06,
+        spread: 0.1 + Math.random() * 0.12, // how far from the centre the web opens
+        rot: 0,
+        spin: (Math.random() - 0.5) * 0.14,
+        y: 0,
+        fall: 0,
+        tilt: 0,
+        tiltX: Math.random() - 0.5,
+        tiltZ: Math.random() - 0.5,
+        float: 3 + Math.random() * 5,
+        wob: Math.random() * 6.28,
+      });
+    }
+    const geo = new THREE.BufferGeometry();
+    const rest = new Float32Array(pos);
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.computeVertexNormals();
+    geo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+    const mesh = new THREE.Mesh(geo, this.crackedMaterial);
+    mesh.frustumCulled = false;
+    mesh.position.set(it.x, 0, it.z);
+    this.scene.add(mesh);
+    this.broken.push({ mesh, rest, x: it.x, z: it.z, r: it.r, age: 0, pieces });
+    this.onBreak?.(it.x, it.z, it.r);
+  }
+
+  dropBroken(b) {
+    const fl = this.broken[b];
+    this.scene.remove(fl.mesh);
+    fl.mesh.geometry.dispose();
+    this.broken.splice(b, 1);
+  }
+
+  // The hull is treated as a line along its length. Anything it meets at speed
+  // shatters; at a crawl the bow only shoulders the floe aside.
+  update(x, z, heading, speed, length, beam, dt, time = 0) {
+    this.time += dt;
+    let dirty = false;
+    const ax = Math.sin(heading);
+    const az = Math.cos(heading);
+    const half = length * 0.5;
+    const pace = Math.abs(speed);
+    for (let i = 0; i < this.items.length; i++) {
+      const it = this.items[i];
+      if (!it.alive) {
+        // Back on station once the ship has gone, growing out of the water.
+        if (this.time >= it.respawnAt && Math.hypot(it.homeX - x, it.homeZ - z) > 45) {
+          it.alive = true;
+          it.grow = 0.02;
+          it.x = it.homeX;
+          it.z = it.homeZ;
+          this.write(i);
+          dirty = true;
+        }
+        continue;
+      }
+      // Floes near the ship ride the swell. Those further off are out of sight.
+      if ((waveState.geo > 0.001 || it.y) && Math.abs(it.x - x) < 90 && Math.abs(it.z - z) < 90) {
+        it.y = waveHeight(this.world, it.x, it.z, time, waveState.geo);
+        this.write(i);
+        dirty = true;
+      }
+      if (it.grow < 1) {
+        it.grow = Math.min(1, it.grow + dt * 0.35);
+        this.write(i);
+        dirty = true;
+      }
+      const dx = it.x - x;
+      const dz = it.z - z;
+      const lim = half + it.r + beam;
+      if (dx > lim || dx < -lim || dz > lim || dz < -lim) continue;
+      const t = Math.max(-half, Math.min(half, dx * ax + dz * az));
+      const cx = dx - ax * t;
+      const cz = dz - az * t;
+      const d = Math.hypot(cx, cz);
+      const touch = beam * 0.5 + it.r * 0.72;
+      if (d >= touch) continue;
+      if (pace >= 0.7) {
+        this.crack(it, i, cx, cz, d);
+      } else if (d > 1e-3) {
+        const push = (touch - d) * dt * 2;
+        it.x += (cx / d) * push;
+        it.z += (cz / d) * push;
+        it.ry += dt * 0.15;
+        this.write(i);
+      }
+      dirty = true;
+    }
+    if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
+
+    this.updateBroken(x, z, ax, az, half, beam, pace, dt, time);
+  }
+
+  updateBroken(x, z, ax, az, half, beam, pace, dt, time) {
+    for (let b = this.broken.length - 1; b >= 0; b--) {
+      const fl = this.broken[b];
+      fl.age += dt;
+      fl.mesh.position.y = waveHeight(this.world, fl.x, fl.z, time, waveState.geo);
+      const out = fl.mesh.geometry.attributes.position;
+      let afloat = false;
+      const widen = 1 - Math.exp(-fl.age * 0.55);
+      for (const p of fl.pieces) {
+        if (p.y < -0.7) {
+          if (!p.gone) {
+            p.gone = true;
+            for (let v = p.start; v < p.end; v++) out.setXYZ(v, 0, -5, 0);
+          }
+          continue;
+        }
+        afloat = true;
+        // A hull still passing shoulders the pieces aside.
+        const wx = fl.x + p.mx + p.ox - x;
+        const wz = fl.z + p.mz + p.oz - z;
+        const along = Math.max(-half, Math.min(half, wx * ax + wz * az));
+        const hx = wx - ax * along;
+        const hz = wz - az * along;
+        const hd = Math.hypot(hx, hz);
+        const reach = beam * 0.5 + 0.5;
+        if (hd < reach && hd > 1e-3) {
+          const shove = (reach - hd) * (0.6 + pace * 0.22) * dt * 1.6;
+          p.vx += (hx / hd) * shove;
+          p.vz += (hz / hd) * shove;
+        }
+        p.ox += p.vx * dt;
+        p.oz += p.vz * dt;
+        p.vx *= 1 - dt * 0.5;
+        p.vz *= 1 - dt * 0.5;
+        p.rot += p.spin * dt;
+        p.float -= dt;
+        if (p.float <= 0) {
+          p.fall += dt * 0.09;
+          p.y -= p.fall * dt * 6;
+          p.tilt = Math.min(0.5, p.tilt + dt * 0.14);
+        }
+        const bob = p.float > 0 ? Math.sin(fl.age * 1.5 + p.wob) * 0.012 : 0;
+        const shiftX = p.mx * p.spread * widen + p.ox;
+        const shiftZ = p.mz * p.spread * widen + p.oz;
+        const c = Math.cos(p.rot);
+        const s = Math.sin(p.rot);
+        for (let v = p.start; v < p.end; v++) {
+          const rx = fl.rest[v * 3] - p.mx;
+          const ry = fl.rest[v * 3 + 1];
+          const rz = fl.rest[v * 3 + 2] - p.mz;
+          out.setXYZ(
+            v,
+            p.mx + rx * c + rz * s + shiftX,
+            ry + p.y + bob + (rx * p.tiltX + rz * p.tiltZ) * p.tilt,
+            p.mz - rx * s + rz * c + shiftZ,
+          );
+        }
+      }
+      out.needsUpdate = true;
+      if (!afloat) this.dropBroken(b);
     }
   }
-  return group;
-}
-
-// Drifting ice floes: pure dressing, they never collide with anything.
-export function buildFloes(world) {
-  const rand = rng(world.seed + 77);
-  const geo = new THREE.CylinderGeometry(1, 1.15, 0.28, 6);
-  const mat = withMist(new THREE.MeshLambertMaterial({ color: '#f4f8f8' }));
-  const count = 240;
-  const mesh = new THREE.InstancedMesh(geo, mat, count);
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const up = new THREE.Vector3(0, 1, 0);
-  const pos = new THREE.Vector3();
-  const scl = new THREE.Vector3();
-  let i = 0;
-  let guard = 0;
-  while (i < count && guard++ < 6000) {
-    const x = (rand() - 0.5) * world.size;
-    const z = (rand() - 0.5) * world.size;
-    if (world.shoreDistance(x, z) < 6 || Math.hypot(x - world.port.x, z - world.port.z) < 26) continue;
-    const r = 0.35 + rand() * rand() * 1.5;
-    q.setFromAxisAngle(up, rand() * 6.28);
-    pos.set(x, 0.03, z);
-    scl.set(r, 1, r * (0.65 + rand() * 0.35));
-    m.compose(pos, q, scl);
-    mesh.setMatrixAt(i++, m);
-  }
-  mesh.count = i;
-  mesh.castShadow = false;
-  mesh.receiveShadow = false;
-  mesh.frustumCulled = false;
-  return mesh;
 }

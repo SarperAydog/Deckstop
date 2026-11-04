@@ -7,12 +7,13 @@ import './style.css';
 import { generateWorld } from './sim/world.js';
 import { Game } from './sim/game.js';
 import { View } from './render/view.js';
+import { renderPortraits } from './render/portraits.js';
 import { Hud } from './ui/hud.js';
 import { Strip } from './ui/strip.js';
 import { WindowModes } from './ui/modes.js';
 import { Audio } from './audio.js';
 
-const SAVE_KEY = 'deckstop.save.v1';
+const SAVE_KEY = 'deckstop.save.v2';
 
 function loadSave() {
   try {
@@ -23,159 +24,188 @@ function loadSave() {
   }
 }
 
-const saved = loadSave();
-const seed = saved?.seed ?? Math.floor(Math.random() * 1e9);
-const world = generateWorld(seed);
-const game = new Game(world, saved);
-game.s.minigameCageId = null; // A haul in progress does not survive a reload.
+// World and voxel light take a moment: let the loading veil paint first.
+function boot() {
+  const t0 = performance.now();
+  const saved = loadSave();
+  const seed = saved?.seed ?? Math.floor(Math.random() * 1e9);
+  const world = generateWorld(seed);
+  const game = new Game(world, saved);
+  game.s.minigameCageId = null; // A haul in progress does not survive a reload.
+  // Opening the game never sets the boat moving by itself; a running chain is the
+  // player's standing order, so that carries on.
+  if (!game.s.auto.active) {
+    game.s.ship.gear = 0;
+    game.s.ship.speed = 0;
+    game.s.ship.helm = 0;
+    game.s.ship.rudder = 0;
+    game.s.ship.yawRate = 0;
+  }
 
-const app = document.getElementById('app');
-const canvas = document.getElementById('view');
-const stripCanvas = document.getElementById('strip');
-const hudRoot = document.getElementById('hud');
+  const app = document.getElementById('app');
+  const canvas = document.getElementById('view');
+  const stripCanvas = document.getElementById('strip');
+  const hudRoot = document.getElementById('hud');
 
-const audio = new Audio();
-const view = new View(canvas, world);
-const strip = new Strip(stripCanvas, game);
+  const audio = new Audio();
+  const view = new View(canvas, world);
+  const strip = new Strip(stripCanvas, game);
+  view.onIceBreak = (r) => audio.ice(r);
+  const portraits = renderPortraits(view.renderer);
 
-const modes = new WindowModes({ app, onChange: () => onModeChange() });
-const hud = new Hud({ root: hudRoot, game, world, view, audio, modes });
+  const modes = new WindowModes({ app, onChange: () => onModeChange() });
+  const hud = new Hud({ root: hudRoot, game, world, view, audio, modes, portraits });
 
-hud.onNewGame = () => {
-  localStorage.removeItem(SAVE_KEY);
-  skipSave = true;
-  location.reload();
-};
+  let skipSave = false;
+  function save() {
+    if (skipSave || (hud.showTitle && game.s.t < 1)) return;
+    try {
+      localStorage.setItem(SAVE_KEY, game.serialize());
+    } catch {
+      /* Private mode or a full disk: the game simply is not saved. */
+    }
+  }
+  hud.onSave = save;
+  hud.onNewGame = () => {
+    localStorage.removeItem(SAVE_KEY);
+    skipSave = true;
+    location.reload();
+  };
 
-// ---- screen mode plumbing ---------------------------------------------------
-const away = document.getElementById('away');
-away.innerHTML = `<div><h2>DECK · STOP</h2><p>Your boat is out there, working.</p>
-  <button class="btn" id="bring-back">Bring back the full view</button></div>`;
-document.getElementById('bring-back').addEventListener('click', () => modes.set('large'));
+  // ---- screen mode plumbing ---------------------------------------------------
+  const away = document.getElementById('away');
+  away.innerHTML = `<div><h2>DECK · STOP</h2><p>Your boat is out there, working.</p>
+    <button class="btn" id="bring-back">Bring back the full view</button></div>`;
+  document.getElementById('bring-back').addEventListener('click', () => modes.set('large'));
 
-function syncSize() {
-  const r = app.getBoundingClientRect();
-  if (modes.mode === 'taskbar') strip.resize(r.width, r.height);
-  else view.resize(r.width, r.height);
-}
+  function syncSize() {
+    const r = app.getBoundingClientRect();
+    if (modes.mode === 'taskbar') strip.resize(r.width, r.height);
+    else view.resize(r.width, r.height);
+  }
 
-function onModeChange() {
-  view.setQuality(modes.mode === 'large' ? 'high' : 'low');
-  view.zoomTarget = modes.mode === 'large' ? 38 : 26;
+  function onModeChange() {
+    view.setQuality(modes.mode === 'large' && !view.preferLow ? 'high' : 'low');
+    view.seaZoom = modes.mode === 'large' ? 1 : 0.8;
+    syncSize();
+    attachWindowListeners(modes.win);
+    loopWindowChanged();
+  }
+
+  new ResizeObserver(syncSize).observe(app);
+  modes.applyClasses();
+
+  // ---- input -------------------------------------------------------------------
+  const listening = new WeakSet();
+  function attachWindowListeners(win) {
+    if (listening.has(win)) return;
+    listening.add(win);
+    win.addEventListener('keydown', (e) => hud.onKey(e, true));
+    win.addEventListener('keyup', (e) => hud.onKey(e, false));
+    win.addEventListener('blur', () => hud.setTurn(0));
+    win.addEventListener('resize', syncSize);
+  }
+  attachWindowListeners(window);
+
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('pointerdown', (e) => {
+    audio.unlock();
+    if (e.button !== 2) return;
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    view.addYaw(e.clientX - lastX, e.clientY - lastY);
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+  canvas.addEventListener('pointerup', () => {
+    dragging = false;
+  });
+  canvas.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      view.addZoom(e.deltaY);
+    },
+    { passive: false },
+  );
+
+  // ---- simulation clock ----------------------------------------------------------
+  // A worker timer keeps the sim ticking at full rate when the tab is hidden, since
+  // browsers throttle rAF and page timers there. This is what makes it a background
+  // game: rAF only draws, and it also ticks so that motion stays smooth. Menus pause it.
+  let lastTick = performance.now();
+  let titleCount = -1;
+
+  function tick() {
+    const now = performance.now();
+    const dt = (now - lastTick) / 1000;
+    lastTick = now;
+    if (hud.paused) return;
+    game.advance(dt);
+    for (const e of game.drainEvents()) {
+      hud.handleEvent(e);
+      view.handleEvent(e);
+      audio.handleEvent(e);
+      strip.handleEvent(e);
+    }
+    audio.setStorm(game.s.weather.storm);
+    const ready = game.s.cages.filter((c) => c.ready).length;
+    if (ready !== titleCount) {
+      titleCount = ready;
+      document.title = ready ? `(${ready}) Deckstop: cages ready` : 'Deckstop';
+    }
+  }
+
+  const timerSource = 'setInterval(() => postMessage(0), 100);';
+  const worker = new Worker(URL.createObjectURL(new Blob([timerSource], { type: 'text/javascript' })));
+  worker.onmessage = tick;
+
+  // ---- render loop -----------------------------------------------------------------
+  let lastFrame = performance.now();
+  let rafWin = window;
+  let rafId = 0;
+
+  function loop() {
+    rafId = rafWin.requestAnimationFrame(loop);
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - lastFrame) / 1000);
+    lastFrame = now;
+    tick();
+    if (modes.mode === 'taskbar') strip.frame(dt);
+    else view.frame(game, dt);
+    hud.update();
+  }
+
+  function loopWindowChanged() {
+    rafWin.cancelAnimationFrame?.(rafId);
+    rafWin = modes.win;
+    rafId = rafWin.requestAnimationFrame(loop);
+  }
+
   syncSize();
-  attachWindowListeners(modes.win);
-  loopWindowChanged();
+  rafId = requestAnimationFrame(loop);
+
+  // ---- saving ------------------------------------------------------------------------
+  setInterval(save, 10000);
+  window.addEventListener('beforeunload', save);
+
+  // Handy for debugging and tuning from the console.
+  window.__deckstop = { game, world, view, hud, modes, strip, portraits };
+
+  window.__deckstop.bootMs = Math.round(performance.now() - t0);
+  const veil = document.getElementById('loading');
+  veil.style.transition = 'opacity .7s';
+  veil.style.opacity = '0';
+  setTimeout(() => veil.remove(), 800);
 }
 
-new ResizeObserver(syncSize).observe(app);
-modes.applyClasses();
-
-// ---- input -------------------------------------------------------------------
-const listening = new WeakSet();
-function attachWindowListeners(win) {
-  if (listening.has(win)) return;
-  listening.add(win);
-  win.addEventListener('keydown', (e) => hud.onKey(e, true));
-  win.addEventListener('keyup', (e) => hud.onKey(e, false));
-  win.addEventListener('blur', () => hud.setTurn(0));
-  win.addEventListener('resize', syncSize);
-}
-attachWindowListeners(window);
-
-let dragging = false;
-let lastX = 0;
-let lastY = 0;
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-canvas.addEventListener('pointerdown', (e) => {
-  audio.unlock();
-  if (e.button !== 2) return;
-  dragging = true;
-  lastX = e.clientX;
-  lastY = e.clientY;
-  canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
-  view.addYaw(e.clientX - lastX, e.clientY - lastY);
-  lastX = e.clientX;
-  lastY = e.clientY;
-});
-canvas.addEventListener('pointerup', () => {
-  dragging = false;
-});
-canvas.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  view.addZoom(e.deltaY);
-}, { passive: false });
-
-// ---- simulation clock ----------------------------------------------------------
-// A worker timer keeps the sim ticking at full rate when the tab is hidden, since
-// browsers throttle rAF and page timers there. This is what makes it a background
-// game: rAF only draws, and it also ticks so that motion stays smooth.
-let lastTick = performance.now();
-let titleCount = -1;
-
-function tick() {
-  const now = performance.now();
-  const dt = (now - lastTick) / 1000;
-  lastTick = now;
-  if (hud.showTitle) return;
-  game.advance(dt);
-  for (const e of game.drainEvents()) {
-    hud.handleEvent(e);
-    view.handleEvent(e);
-    audio.handleEvent(e);
-    strip.handleEvent(e);
-  }
-  audio.setStorm(game.s.weather.storm);
-  const ready = game.s.cages.filter((c) => c.ready).length;
-  if (ready !== titleCount) {
-    titleCount = ready;
-    document.title = ready ? `(${ready}) Deckstop: cages ready` : 'Deckstop';
-  }
-}
-
-const timerSource = 'setInterval(() => postMessage(0), 100);';
-const worker = new Worker(URL.createObjectURL(new Blob([timerSource], { type: 'text/javascript' })));
-worker.onmessage = tick;
-
-// ---- render loop -----------------------------------------------------------------
-let lastFrame = performance.now();
-let rafWin = window;
-let rafId = 0;
-
-function loop() {
-  rafId = rafWin.requestAnimationFrame(loop);
-  const now = performance.now();
-  const dt = Math.min(0.1, (now - lastFrame) / 1000);
-  lastFrame = now;
-  tick();
-  if (modes.mode === 'taskbar') strip.frame(dt);
-  else view.frame(game, dt);
-  hud.update();
-}
-
-function loopWindowChanged() {
-  rafWin.cancelAnimationFrame?.(rafId);
-  rafWin = modes.win;
-  rafId = rafWin.requestAnimationFrame(loop);
-}
-
-syncSize();
-rafId = requestAnimationFrame(loop);
-
-// ---- saving ------------------------------------------------------------------------
-let skipSave = false;
-function save() {
-  if (skipSave || hud.showTitle) return;
-  try {
-    localStorage.setItem(SAVE_KEY, game.serialize());
-  } catch {
-    /* Private mode or a full disk: the game simply is not saved. */
-  }
-}
-setInterval(save, 10000);
-window.addEventListener('beforeunload', save);
-
-// Handy for debugging and tuning from the console.
-window.__deckstop = { game, world, view, hud, modes, strip };
+// Not tied to rAF: a tab opened in the background must still boot.
+setTimeout(boot, 60);

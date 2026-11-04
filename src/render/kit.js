@@ -20,6 +20,12 @@ export function paint(geo, color) {
   return g;
 }
 
+// Hard facets: each triangle gets its own flat normal.
+export function facet(geo) {
+  geo.computeVertexNormals();
+  return geo;
+}
+
 const m = new THREE.Matrix4();
 const q = new THREE.Quaternion();
 const e = new THREE.Euler();
@@ -36,24 +42,17 @@ export function place(geo, x, y, z, ry = 0, sx = 1, sy = sx, sz = sx, rx = 0, rz
   return geo;
 }
 
-export const box = (w, h, d, color) => paint(new THREE.BoxGeometry(w, h, d), color);
-export const cyl = (rt, rb, h, seg, color) => paint(new THREE.CylinderGeometry(rt, rb, h, seg), color);
-export const cone = (r, h, seg, color) => paint(new THREE.ConeGeometry(r, h, seg), color);
-
-// Soft blob with sphere normals: reads as the rounded dark tree masses.
-export function blob(r, color, detail = 1) {
-  const g = new THREE.IcosahedronGeometry(r, detail);
-  const pos = g.attributes.position;
-  const nor = g.attributes.normal;
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i).normalize();
-    nor.setXYZ(i, v.x, v.y, v.z);
-  }
-  return paint(g, color);
+// Moves a whole list of parts at once.
+export function placeAll(parts, x, y, z, ry = 0, scale = 1) {
+  for (const g of parts) place(g, x, y, z, ry, scale);
+  return parts;
 }
 
-// Gable roof: a triangular prism lying along Z.
+export const box = (w, h, d, color) => paint(new THREE.BoxGeometry(w, h, d), color);
+export const cyl = (rt, rb, h, seg, color) => facet(paint(new THREE.CylinderGeometry(rt, rb, h, seg), color));
+export const cone = (r, h, seg, color) => facet(paint(new THREE.ConeGeometry(r, h, seg), color));
+
+// Gable: a triangular prism lying along Z.
 export function gable(w, h, d, color) {
   const hw = w / 2;
   const hd = d / 2;
@@ -68,6 +67,41 @@ export function gable(w, h, d, color) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(tris, 3));
   g.computeVertexNormals();
   return paint(g, color);
+}
+
+// A boulder: a crumpled icosahedron, its upward faces under snow.
+export function rock(r, seed, stone = '#8d9aaa', snow = '#eef2f5') {
+  const g = new THREE.IcosahedronGeometry(r, 0);
+  const pos = g.attributes.position;
+  const seen = new Map();
+  let rs = seed * 9301 + 49297;
+  const rnd = () => {
+    rs = (rs * 9301 + 49297) % 233280;
+    return rs / 233280;
+  };
+  for (let i = 0; i < pos.count; i++) {
+    const key = `${pos.getX(i).toFixed(3)},${pos.getY(i).toFixed(3)},${pos.getZ(i).toFixed(3)}`;
+    if (!seen.has(key)) seen.set(key, [0.72 + rnd() * 0.55, 0.62 + rnd() * 0.5, 0.72 + rnd() * 0.55]);
+    const k = seen.get(key);
+    pos.setXYZ(i, pos.getX(i) * k[0], pos.getY(i) * k[1], pos.getZ(i) * k[2]);
+  }
+  g.computeVertexNormals();
+  g.deleteAttribute('uv');
+  const col = new Float32Array(pos.count * 3);
+  const a = new THREE.Color(stone);
+  const b = new THREE.Color(snow);
+  const nor = g.attributes.normal;
+  for (let i = 0; i < pos.count; i += 3) {
+    const c = nor.getY(i) > 0.62 ? b : a;
+    const v = 0.94 + rnd() * 0.12;
+    for (let j = 0; j < 3; j++) {
+      col[(i + j) * 3] = c.r * v;
+      col[(i + j) * 3 + 1] = c.g * v;
+      col[(i + j) * 3 + 2] = c.b * v;
+    }
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
 }
 
 export function merged(parts) {
