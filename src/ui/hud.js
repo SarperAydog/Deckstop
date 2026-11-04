@@ -8,7 +8,7 @@ import { Minigame } from './minigame.js';
 import { PRESETS } from './modes.js';
 
 const SETTINGS_KEY = 'deckstop.settings.v1';
-export const DEFAULT_SETTINGS = { volume: 80, muted: false, quality: 'high', tiltShift: true, outlines: true, snow: true, labels: true, uiScale: 100 };
+export const DEFAULT_SETTINGS = { volume: 80, muted: false, quality: 'high', tiltShift: true, outlines: true, shadows: true, snow: true, labels: true, uiScale: 100 };
 
 const ICONS = {
   taskbar: '<svg viewBox="0 0 18 14"><rect x="1" y="9" width="16" height="4" fill="currentColor"/><rect x="1" y="1" width="16" height="12" fill="none" stroke="currentColor"/></svg>',
@@ -138,6 +138,7 @@ export class Hud {
     }
     this.audio.setVolume(st.muted ? 0 : st.volume / 100);
     this.view.settings.tiltShift = st.tiltShift;
+    this.view.settings.shadows = st.shadows;
     this.view.settings.outlines = st.outlines;
     this.view.settings.snow = st.snow;
     this.view.preferLow = st.quality === 'low';
@@ -264,6 +265,7 @@ export class Hud {
         <select data-set="quality"><option value="high" ${st.quality === 'high' ? 'selected' : ''}>High</option><option value="low" ${st.quality === 'low' ? 'selected' : ''}>Low</option></select></label>
       ${toggle('tiltShift', 'Miniature lens', 'Soft focus at the top and bottom of the frame')}
       ${toggle('outlines', 'Outlines', 'One-pixel edge around models')}
+      ${toggle('shadows', 'Sun shadows', 'Crisp shadows from buildings, trees and ships')}
       ${toggle('snow', 'Snowfall', 'Light flakes in clear weather')}
       <h3>Interface</h3>
       <label class="set-row"><span>Interface size</span><input type="range" min="85" max="125" step="5" value="${st.uiScale}" data-set="uiScale"/></label>
@@ -631,8 +633,21 @@ export class Hud {
     const g = this.game;
     const s = g.s;
     this.dash.update(g, 0); // N stays up, the same as on the chart
-    const purse = `$${Math.round(s.money)}`;
+    const shown = Math.round(s.money);
     const purseEl = this.$('.purse');
+    if (this.lastMoney === undefined) this.lastMoney = shown;
+    if (shown !== this.lastMoney) {
+      const delta = shown - this.lastMoney;
+      if (Math.abs(delta) >= 2) {
+        const pop = purseEl.ownerDocument.createElement('span');
+        pop.className = `purse-delta ${delta > 0 ? 'up' : 'down'}`;
+        pop.textContent = `${delta > 0 ? '+' : '-'}$${Math.abs(delta)}`;
+        this.$('.top-left').appendChild(pop);
+        setTimeout(() => pop.remove(), 1500);
+      }
+      this.lastMoney = shown;
+    }
+    const purse = `$${shown}`;
     if (purseEl.textContent !== purse) purseEl.textContent = purse;
     this.setHtml('status', this.$('.status'), this.statusHtml());
     this.setHtml('hint', this.$('.hint'), this.hintText());

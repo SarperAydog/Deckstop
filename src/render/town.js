@@ -3,7 +3,7 @@
 // red crab warehouse, breakwater with its beacon, striped lighthouse on the point.
 import * as THREE from 'three';
 import { fbm, TOWN } from '../sim/world.js';
-import { box, cone, cyl, gable, merged, paint, place, placeAll, rock } from './kit.js';
+import { box, cone, cyl, frostCone, gable, mergeChunks, paint, place, placeAll, rock } from './kit.js';
 
 const GROUND = 1.42;
 const SNOW = '#f4f7f9';
@@ -48,9 +48,14 @@ function crabEmblem(size, color) {
   return out;
 }
 
+let windowCount = 0;
 function windowAt(parts, x, y, z, ry, w = 0.55, h = 0.72) {
   const frame = box(w + 0.14, h + 0.14, 0.05, WHITE);
-  const glass = box(w, h, 0.07, GLASS);
+  // Someone is home behind about one window in three.
+  const glass = box(w, h, 0.07, windowCount++ % 3 === 1 ? '#f2d58c' : GLASS);
+  const dx = Math.sin(ry) * 0.05;
+  const dz = Math.cos(ry) * 0.05;
+  parts.push(place(box(w + 0.2, 0.06, 0.1, SNOW), x + dx, y - h / 2 - 0.09, z + dz, ry));
   const barV = box(0.05, h, 0.09, WHITE);
   const barH = box(w, 0.05, 0.09, WHITE);
   parts.push(place(frame, x, y, z, ry), place(glass, x, y, z, ry), place(barV, x, y, z, ry), place(barH, x, y, z, ry));
@@ -62,7 +67,7 @@ function house(o) {
   const { w, d, h = 2, rh = w * 0.42, wall, chimney = true, doors = 1, windows = true, trim = WHITE, porch = false } = o;
   const parts = [];
   const line = shade(wall, 0.72);
-  parts.push(place(box(w + 0.16, 0.3, d + 0.16, shade(wall, 0.6)), 0, 0.15, 0));
+  parts.push(place(box(w + 0.18, 0.34, d + 0.18, '#6d7680'), 0, 0.15, 0));
   parts.push(place(box(w, h, d, wall), 0, h / 2, 0));
   parts.push(place(gable(w, rh, d, wall), 0, h, 0));
 
@@ -90,6 +95,20 @@ function house(o) {
     parts.push(place(box(len + 0.04, 0.2, d + ov * 2 + 0.1, SNOW), (sx * run) / 2, midY + 0.17, 0, 0, 1, 1, 1, 0, -sx * slope));
   }
 
+  // Ridge line of the snow, then icicles along both eaves.
+  parts.push(place(box(0.2, 0.08, d + ov * 2 + 0.08, '#e3ebf0'), 0, h + rh + 0.2, 0));
+  const eaveY = h + rh - run * Math.tan(slope) - 0.02;
+  for (let z = -d / 2; z <= d / 2; z += 0.62) {
+    const hang = 0.14 + ((Math.abs(z * 31 + w * 7) % 1) * 0.2);
+    for (const sx of [-1, 1]) {
+      parts.push(place(paint(new THREE.ConeGeometry(0.035, hang, 4), '#dcecf3'), sx * (run - 0.03), eaveY - hang / 2, z, 0, 1, 1, 1, Math.PI));
+    }
+  }
+  // Soft drifts piled against the two long walls.
+  for (const sx of [-1, 1]) {
+    parts.push(place(paint(new THREE.IcosahedronGeometry(1, 1), SNOW), sx * (w / 2 + 0.08), 0.02, -d * 0.16, 0, 0.32, 0.3, d * 0.42));
+  }
+
   if (chimney) {
     const cz = -d * 0.22;
     parts.push(place(box(0.42, 1.1, 0.42, '#8e4a3d'), w * 0.2, h + rh * 0.72, cz));
@@ -108,6 +127,8 @@ function house(o) {
   }
   for (let i = 0; i < doors; i++) {
     const x = doors === 1 ? -w * 0.2 : -w * 0.25 + (w * 0.5 * i) / (doors - 1);
+    // Door lamp, and the steps' cap of trodden snow.
+    parts.push(place(box(0.1, 0.14, 0.1, '#f2d58c'), x + 0.5, 1.42, d / 2 + 0.06));
     parts.push(place(box(0.74, 1.3, 0.05, WHITE), x, 0.78, d / 2 + 0.03));
     parts.push(place(box(0.58, 1.2, 0.08, shade(wall, 0.62)), x, 0.74, d / 2 + 0.03));
     parts.push(place(box(0.9, 0.12, 0.42, WOOD), x, 0.1, d / 2 + 0.24));
@@ -165,15 +186,15 @@ function barrel(parts, x, y, z, color = '#7e4c3a') {
 
 // Conifer: three stacked cones in dark teal, faceted, with a little snow on top.
 export function conifer(x, y, z, s, seed) {
-  const pal = ['#3a6a66', '#2f5d5c', '#44736c', '#366460'];
+  const pal = ['#2f5f5c', '#274f50', '#376860', '#2c5656'];
   const c = pal[seed % 4];
-  const lift = shade(c, 1.22);
+  const frost = '#cfe0e0';
   return [
-    place(cyl(0.09, 0.13, 0.55, 5, '#3b2f2b'), x, y + 0.25 * s, z, 0, s),
-    place(cone(0.82, 1.35, 7, c), x, y + 0.95 * s, z, seed, s),
-    place(cone(0.64, 1.2, 7, lift), x, y + 1.72 * s, z, seed + 1, s),
-    place(cone(0.42, 1.05, 6, c), x, y + 2.45 * s, z, seed + 2, s),
-    place(cone(0.17, 0.42, 6, '#e9eff1'), x, y + 2.86 * s, z, seed, s),
+    place(cyl(0.09, 0.14, 0.6, 5, '#3b2f2b'), x, y + 0.25 * s, z, 0, s),
+    place(frostCone(0.9, 1.05, 7, shade(c, 0.86), shade(c, 1.28)), x, y + 0.82 * s, z, seed, s),
+    place(frostCone(0.74, 1.05, 7, c, frost), x, y + 1.42 * s, z, seed + 0.9, s),
+    place(frostCone(0.56, 1, 7, shade(c, 1.1), frost), x, y + 2.05 * s, z, seed + 1.7, s),
+    place(frostCone(0.36, 0.86, 6, shade(c, 1.2), '#f1f6f6'), x, y + 2.66 * s, z, seed + 2.4, s),
   ];
 }
 
@@ -280,6 +301,18 @@ function pier(parts, world) {
   forklift(parts, 0.1, deckY + 0.07, -11.4, 0.5);
   crates(parts, -0.45, deckY + 0.07, -15, 4);
   crates(parts, 0.5, deckY + 0.07, -19, 1);
+  // Stacked crab pots waiting on the planks, and a heap of orange netting.
+  const pot = (x, y, z, ry) => {
+    parts.push(place(box(0.5, 0.34, 0.5, '#34434b'), x, y + 0.17, z, ry));
+    parts.push(place(box(0.54, 0.04, 0.54, '#c9b17f'), x, y + 0.34, z, ry));
+    parts.push(place(box(0.54, 0.04, 0.54, '#c9b17f'), x, y, z, ry));
+  };
+  pot(-1.05, deckY + 0.07, -6.2, 0.1);
+  pot(-1.02, deckY + 0.45, -6.22, -0.1);
+  pot(-1.05, deckY + 0.07, -6.85, 0.2);
+  pot(1.0, deckY + 0.07, -13.4, 0);
+  pot(1.04, deckY + 0.45, -13.4, 0.2);
+  parts.push(place(paint(new THREE.IcosahedronGeometry(0.42, 1), '#d9682e'), -0.9, deckY + 0.18, -21.1, 0, 1, 0.5, 1.25));
   // Harbourmaster's hut and flags at the pier head.
   const hut = house({ w: 2.3, d: 1.9, h: 1.25, rh: 0.75, wall: '#e7e4dc', chimney: false, doors: 1 });
   placeAll(hut, -0.15, deckY + 0.07, -24.1, 0);
@@ -314,7 +347,17 @@ export function buildTown(world, field) {
       field.addBox(x - hw, x + hw, GROUND - 0.5, GROUND + solid.h, z - hd, z + hd);
     }
   };
-  const addHouse = (o, x, z, ry = 0) => add(house(o), x, z, ry, { w: o.w, d: o.d, h: (o.h ?? 2) + (o.rh ?? o.w * 0.42) * 0.7 });
+  const smokes = [];
+  const addHouse = (o, x, z, ry = 0) => {
+    add(house(o), x, z, ry, { w: o.w, d: o.d, h: (o.h ?? 2) + (o.rh ?? o.w * 0.42) * 0.7 });
+    if (o.chimney === false) return;
+    const rh = o.rh ?? o.w * 0.42;
+    const lx = o.w * 0.2;
+    const lz = -o.d * 0.22;
+    const cs = Math.cos(ry);
+    const sn = Math.sin(ry);
+    smokes.push({ x: x + lx * cs + lz * sn, y: GROUND - 0.1 + (o.h ?? 2) + rh * 0.72 + 0.7, z: z - lx * sn + lz * cs });
+  };
 
   const RED = '#a93b34';
   const GREEN = '#3f6f66';
@@ -382,6 +425,32 @@ export function buildTown(world, field) {
   const shed = [place(box(3.2, 1.3, 1.8, '#a9c5d0'), 0, 0.75, 0), place(box(3.5, 0.14, 2.1, SNOW), 0, 1.5, 0)];
   for (let i = 0; i <= 3; i++) shed.push(place(box(0.05, 1.3, 1.84, '#f2f3f1'), -1.6 + i * 1.07, 0.75, 0));
   add(shed, 13.5, -0.8, 0, { w: 3.2, d: 1.8, h: 1.5 });
+
+  const rack = (x, z, ry) => {
+    const p = [];
+    for (const s of [-1.3, 0, 1.3]) p.push(place(box(0.1, 1.5, 0.1, WOOD_D), s, 0.75, 0));
+    p.push(place(box(2.8, 0.08, 0.08, WOOD), 0, 1.45, 0));
+    for (let i = -3; i <= 3; i++) p.push(place(box(0.14, 0.62, 0.04, i % 2 ? '#a9b4b2' : '#c4c8be'), i * 0.36, 1.12, 0));
+    placeAll(p, x, GROUND - 0.05, z, ry);
+    props.push(...p);
+  };
+  rack(-5.5, 8.6, 0.05);
+  rack(15, 26, 1.5);
+  const woodpile = (x, z, ry) => {
+    const p = [];
+    for (let row = 0; row < 3; row++) {
+      for (let i = 0; i < 5 - row; i++) p.push(place(cyl(0.11, 0.11, 1.2, 6, i % 2 ? '#9a7a57' : '#85684a'), (i - (4 - row) / 2) * 0.23, 0.12 + row * 0.2, 0, 0, 1, 1, 1, Math.PI / 2));
+    }
+    p.push(place(box(1.3, 0.06, 1.26, SNOW), 0, 0.72, 0));
+    placeAll(p, x, GROUND - 0.05, z, ry);
+    props.push(...p);
+  };
+  woodpile(-9.8, 18.4, 0.1);
+  woodpile(14.4, 15.8, 1.5);
+  woodpile(25.4, 13, 0.4);
+  const sledge = [place(box(0.7, 0.1, 1.5, '#7b6a5c'), 0, 0.28, 0), place(box(0.06, 0.2, 1.7, '#3c3230'), -0.3, 0.1, 0), place(box(0.06, 0.2, 1.7, '#3c3230'), 0.3, 0.1, 0), place(box(0.5, 0.3, 0.8, '#3f5c66'), 0, 0.48, -0.1)];
+  placeAll(sledge, 0.2, GROUND - 0.05, 10.8, 0.9);
+  props.push(...sledge);
 
   fence(props, -20, 17, -20, 25);
   fence(props, -20, 25, -11, 25);
@@ -510,10 +579,14 @@ export function buildTown(world, field) {
     }
   }
 
-  return { props: merged(props), trees: merged(trees) };
+  return { props: mergeChunks(props), trees: mergeChunks(trees), smokes };
 }
 
-export function relightTrees(geo, field) {
+export function relightTrees(geos, field) {
+  for (const g of geos) relightOne(g, field);
+}
+
+function relightOne(geo, field) {
   // Mix each facet with the voxel normal so a stand of trees lights as one mass.
   const pos = geo.attributes.position;
   const nor = geo.attributes.normal;

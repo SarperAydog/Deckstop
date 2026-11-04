@@ -436,3 +436,93 @@ export class ShipWake {
     this.power.needsUpdate = true;
   }
 }
+
+// Small signs of life: smoke rising from the town, and the ship's mooring lines.
+export class TownLife {
+  constructor(scene, material, smokes, world) {
+    this.smokes = smokes;
+    this.world = world;
+    // Smoke: pale low-poly puffs, from chimneys and the ship's stack.
+    const puff = new THREE.IcosahedronGeometry(1, 0);
+    puff.setAttribute('color', new THREE.BufferAttribute(new Float32Array(puff.attributes.position.count * 3).fill(0.93), 3));
+    this.puffs = Array.from({ length: 150 }, () => ({ life: 0 }));
+    this.head = 0;
+    this.puffMesh = new THREE.InstancedMesh(puff, material, this.puffs.length);
+    this.puffMesh.frustumCulled = false;
+    this.puffMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.puffMesh.count = 0;
+    scene.add(this.puffMesh);
+    this.timers = smokes.map((_, i) => i * 0.37);
+    this.shipTimer = 0;
+
+    // Mooring lines, shown while she is alongside.
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3));
+    this.lines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: '#3a3430' }));
+    this.lines.frustumCulled = false;
+    this.lines.visible = false;
+    scene.add(this.lines);
+  }
+
+  spawn(x, y, z, size, rise, dark) {
+    const p = this.puffs[this.head];
+    this.head = (this.head + 1) % this.puffs.length;
+    Object.assign(p, { x, y, z, size, rise, life: 1, max: 3.4 + Math.random() * 1.6, ry: Math.random() * 6, dark });
+  }
+
+  update(time, dt, ship, speed, docked, game) {
+    // Chimneys breathe out slowly; the stack works harder the faster she goes.
+    this.smokes.forEach((c, i) => {
+      this.timers[i] -= dt;
+      if (this.timers[i] <= 0) {
+        this.timers[i] = 0.95 + (i % 4) * 0.2;
+        this.spawn(c.x, c.y, c.z, 0.2, 0.55, false);
+      }
+    });
+    const u = ship.userData;
+    const k = u.length / 8;
+    const fx = Math.sin(ship.rotation.y);
+    const fz = Math.cos(ship.rotation.y);
+    const pace = Math.abs(speed);
+    this.shipTimer -= dt;
+    if (this.shipTimer <= 0 && !docked) {
+      this.shipTimer = Math.max(0.16, 0.7 - pace * 0.07);
+      const back = 0.1 * u.length - 0.25 * u.length * 0.62;
+      const side = u.beam * 0.14;
+      this.spawn(ship.position.x + fx * back + fz * side, 0.98 * k + 0.82 * k * 0.86 + 0.6 * k, ship.position.z + fz * back - fx * side, (0.11 + pace * 0.012) * k, 0.8, true);
+    }
+    const o = TownLife.dummy;
+    let live = 0;
+    for (const p of this.puffs) {
+      if (p.life <= 0) continue;
+      p.life -= dt / p.max;
+      if (p.life <= 0) continue;
+      const age = 1 - p.life;
+      p.y += p.rise * dt * (1 - age * 0.5);
+      p.x += dt * 0.32;
+      p.z += dt * 0.12;
+      o.position.set(p.x, p.y, p.z);
+      o.rotation.set(age * 2, p.ry + age, 0);
+      o.scale.setScalar(p.size * (1 + age * 2.4) * Math.min(1, p.life * 3));
+      o.updateMatrix();
+      this.puffMesh.setMatrixAt(live++, o.matrix);
+    }
+    this.puffMesh.count = live;
+    this.puffMesh.instanceMatrix.needsUpdate = true;
+
+    // Bow and stern lines to the pier bollards.
+    this.lines.visible = docked;
+    if (docked) {
+      const pos = this.lines.geometry.attributes.position;
+      const { port } = game.world;
+      const lever = u.length * 0.42;
+      const y = 1.1 * k;
+      pos.setXYZ(0, ship.position.x + fx * lever - 0.3, y, ship.position.z + fz * lever);
+      pos.setXYZ(1, port.pier.x1, 1.9, ship.position.z + fz * (lever + 2.4));
+      pos.setXYZ(2, ship.position.x - fx * lever - 0.3, y, ship.position.z - fz * lever);
+      pos.setXYZ(3, port.pier.x1, 1.9, ship.position.z - fz * (lever + 2.4));
+      pos.needsUpdate = true;
+    }
+  }
+}
+TownLife.dummy = new THREE.Object3D();

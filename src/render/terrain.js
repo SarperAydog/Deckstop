@@ -16,19 +16,20 @@ const HALO_WIDTH = 0.18;
 
 const SNOW = new THREE.Color('#f1f4f7');
 const ICE = new THREE.Color('#e8f3f6');
+const SHELF = new THREE.Color('#d8e8ee');
 
 export function terrainMaterial() {
   return stylize(new THREE.MeshLambertMaterial({ vertexColors: true }), {
     key: 'terrain',
     uniforms: { uRock: { value: new THREE.Color('#8794a6') } },
-    vert: 'attribute float aSnow; varying float vSnow;',
-    vertBody: 'vSnow = aSnow;',
-    frag: 'varying float vSnow; uniform vec3 uRock;',
+    vert: 'attribute float aSnow; attribute float aTone; varying float vSnow; varying float vTone;',
+    vertBody: 'vSnow = aSnow; vTone = aTone;',
+    frag: 'varying float vSnow; varying float vTone; uniform vec3 uRock;',
     fragColor: /* glsl */ `
       float fw = max(fwidth(vSnow), 0.001);
       float sn = smoothstep(0.5 - fw * 0.7, 0.5 + fw * 0.7, vSnow);
       float soft = smoothstep(0.5 - fw * 1.6, 0.5 + fw * 1.6, vSnow);
-      diffuseColor.rgb = mix(uRock, diffuseColor.rgb, sn);
+      diffuseColor.rgb = mix(uRock * vTone, diffuseColor.rgb, sn);
       // A pixel just below the snow's edge falls into its little shadow.
       diffuseColor.rgb *= 1.0 - clamp(dFdy(soft) * 1.6, 0.0, 0.42);
     `,
@@ -68,13 +69,20 @@ export function buildTerrainGeometry(world) {
   const pos = [];
   const col = [];
   const att = [];
+  const tones = [];
   const tri = (a, b, c, i, j, v) => {
     pos.push(px[a], py[a], pz[a], px[b], py[b], pz[b], px[c], py[c], pz[c]);
     att.push(snow[a], snow[b], snow[c]);
-    // The faintest tone shift per facet: enough to read as planes, never as noise.
-    const t = 0.975 + hash(i + v * 7, j) * 0.025;
-    const base = surf[a] === 2 ? ICE : SNOW;
+    // A small tone shift per facet: enough to read as planes, never as noise.
+    const t = 0.96 + hash(i + v * 7, j) * 0.04;
+    const top = Math.max(py[a], py[b], py[c]);
+    // The last metre above the water is glazed with ice.
+    const base = surf[a] === 2 ? ICE : top < 0.72 && surf[a] === 0 ? SHELF : SNOW;
     for (let n = 0; n < 3; n++) col.push(base.r * t, base.g * t, base.b * t);
+    // Rock facets vary more, in bands that read as layers.
+    const mid = (py[a] + py[b] + py[c]) / 3;
+    const tone = 0.8 + hash(j + v * 3, i) * 0.26 + Math.sin(mid * 1.5) * 0.09;
+    tones.push(tone, tone, tone);
   };
   for (let j = 0; j < nv - 1; j++) {
     for (let i = 0; i < nv - 1; i++) {
@@ -96,6 +104,7 @@ export function buildTerrainGeometry(world) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setAttribute('aSnow', new THREE.Float32BufferAttribute(att, 1));
+  g.setAttribute('aTone', new THREE.Float32BufferAttribute(tones, 1));
   g.computeVertexNormals();
   return g;
 }
@@ -194,6 +203,7 @@ export class Floes {
     }
     this.mesh = new THREE.InstancedMesh(geo, material, this.items.length);
     this.mesh.frustumCulled = false;
+    this.mesh.castShadow = true;
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.dummy = new THREE.Object3D();
 

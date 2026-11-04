@@ -4,14 +4,14 @@ import { buildTerrainGeometry, Floes, terrainMaterial } from './terrain.js';
 import { buildTown, relightTrees } from './town.js';
 import { buildWater, waveState } from './water.js';
 import { buildShip, BuoyField, updateShip, makeBoatMaterial } from './ship.js';
-import { Flecks, Gulls, Rain, ShipWake, Snow, Wake } from './fx.js';
+import { Flecks, Gulls, Rain, ShipWake, Snow, TownLife, Wake } from './fx.js';
 import { box, cyl, merged, place } from './kit.js';
 import { hullUniforms, mirrorMaterial, mistUniforms, outlineMaterial, stylize, voxUniforms } from './mist.js';
 import { VoxelField } from './voxels.js';
 
 // Three weather moods. They blend continuously from sim weather values.
 const MOODS = {
-  clear: { mist: '#dbe6e9', deep: '#3b8590', mid: '#3c97a0', shallow: '#66babb', reflect: '#2c6875', sky: '#ffffff', ground: '#c4d3e4', sun: '#fff6e6', ao: '#93a6c4', sunI: 1.3, skyI: 2.05 },
+  clear: { mist: '#dbe6e9', deep: '#3b8590', mid: '#3c97a0', shallow: '#66babb', reflect: '#2c6875', sky: '#ffffff', ground: '#c4d3e4', sun: '#fff6e6', ao: '#a2b3cc', sunI: 1.6, skyI: 1.95 },
   overcast: { mist: '#c6d0d4', deep: '#4c7f89', mid: '#558f96', shallow: '#7fb0b0', reflect: '#3f6a74', sky: '#e8edf0', ground: '#b4c1cd', sun: '#eef0ee', ao: '#808fa6', sunI: 0.6, skyI: 2.3 },
   storm: { mist: '#8d9aa0', deep: '#34545f', mid: '#3d5f69', shallow: '#6d8a8e', reflect: '#253b44', sky: '#b4bfc5', ground: '#74838c', sun: '#c7d0d4', ao: '#5f6d82', sunI: 0.35, skyI: 2 },
 };
@@ -90,6 +90,15 @@ export class View {
 
     this.hemi = new THREE.HemisphereLight(0xffffff, 0xffffff, 2);
     this.sun = new THREE.DirectionalLight(0xffffff, 1);
+    // Crisp cast shadows on land and ships. The water takes no shadows: it is lit its own way.
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(3072, 3072);
+    this.sun.shadow.bias = -0.0006;
+    this.sun.shadow.normalBias = 0.05;
+    this.sun.shadow.camera.near = 20;
+    this.sun.shadow.camera.far = 420;
     this.scene.add(this.hemi, this.sun, this.sun.target);
 
     // Light comes from the voxel field: build it from everything that stands.
@@ -104,15 +113,18 @@ export class View {
     this.mirrorMat = mirrorMaterial();
     const terrainGeo = buildTerrainGeometry(world);
     const terrain = new THREE.Mesh(terrainGeo, terrainMaterial());
-    const props = new THREE.Mesh(town.props, propMat);
-    const trees = new THREE.Mesh(town.trees, propMat);
-    for (const m of [terrain, props, trees]) m.frustumCulled = false;
-    this.scene.add(terrain, props, trees);
+    terrain.frustumCulled = false;
+    terrain.receiveShadow = true;
+    terrain.castShadow = true;
+    this.scene.add(terrain);
     this.outlines = new THREE.Group();
-    for (const g of [town.props, town.trees]) {
-      const hull = new THREE.Mesh(g, this.outlineMat);
-      hull.frustumCulled = false;
-      this.outlines.add(hull);
+    const chunks = [...town.props, ...town.trees];
+    for (const g of chunks) {
+      const m = new THREE.Mesh(g, propMat);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      this.scene.add(m);
+      this.outlines.add(new THREE.Mesh(g, this.outlineMat));
     }
     this.scene.add(this.outlines);
 
@@ -120,11 +132,12 @@ export class View {
     this.mirrorScene = new THREE.Scene();
     this.mirrorRoot = new THREE.Group();
     this.mirrorRoot.scale.y = -1;
-    for (const g of [terrainGeo, town.props, town.trees]) {
-      const mm = new THREE.Mesh(g, this.mirrorMat);
+    {
+      const mm = new THREE.Mesh(terrainGeo, this.mirrorMat);
       mm.frustumCulled = false;
       this.mirrorRoot.add(mm);
     }
+    for (const g of chunks) this.mirrorRoot.add(new THREE.Mesh(g, this.mirrorMat));
     this.mirrorScene.add(this.mirrorRoot);
     this.mirrorTarget = new THREE.WebGLRenderTarget(4, 4, { depthBuffer: true });
 
@@ -167,6 +180,7 @@ export class View {
     this.shipWake = new ShipWake(this.scene);
     this.rain = new Rain(this.scene);
     this.snow = new Snow(this.scene);
+    this.life = new TownLife(this.scene, stylize(new THREE.MeshLambertMaterial({ vertexColors: true })), town.smokes, world);
     this.gulls = new Gulls(this.scene, stylize(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })));
 
     this.tug = buildTug();
@@ -312,9 +326,22 @@ export class View {
     mistUniforms.uMistNear.value = reach * 1.05;
     mistUniforms.uMistFar.value = reach * 1.9;
 
-    // Soft, low sun from the left of the frame. No cast shadows: the voxel AO does it.
-    this.sun.position.set(this.focus.x - 100, 130, this.focus.z + 62);
-    this.sun.target.position.set(this.focus.x, 0, this.focus.z);
+    // Low sun from the left of the frame, so even small things throw a clear shadow.
+    // Steps in whole units and fixed extents keep the shadow edges from crawling.
+    const sunX = Math.round(this.focus.x);
+    const sunZ = Math.round(this.focus.z);
+    this.sun.position.set(sunX - 110, 118, sunZ + 74);
+    this.sun.target.position.set(sunX, 0, sunZ);
+    const wantExt = Math.ceil(reach * 1.3 / 10) * 10;
+    const shadowCam = this.sun.shadow.camera;
+    if (shadowCam.right !== wantExt) {
+      shadowCam.left = -wantExt;
+      shadowCam.right = wantExt;
+      shadowCam.top = wantExt;
+      shadowCam.bottom = -wantExt;
+      shadowCam.updateProjectionMatrix();
+    }
+    this.sun.castShadow = this.quality === 'high' && this.settings.shadows !== false;
 
     const u = this.water.uniforms;
     u.uTime.value = t;
@@ -340,6 +367,7 @@ export class View {
     this.shipWake.update(dt, shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, game.topSpeed);
     this.floes.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, dt, t);
     this.gulls.update(t, dt, -2, -6, shipRoot.position.x, shipRoot.position.z);
+    this.life.update(t, dt, shipRoot, sp, s.ship.docked, game);
     this.flecks.update(dt);
     this.rain.update(this.focus.x, this.focus.z, reach, w.storm + w.overcast * 0.08, t);
     this.snow.update(this.focus.x, this.focus.z, reach, this.settings.snow ? Math.max(0, 0.75 - w.storm * 1.5) : 0, t);
@@ -369,6 +397,7 @@ export class View {
     this.flip ??= new THREE.Matrix4().makeScale(1, -1, 1);
     this.shipMirror.matrix.multiplyMatrices(this.flip, body.matrixWorld);
     this.outlines.visible = this.settings.outlines;
+    this.renderer.shadowMap.autoUpdate = this.sun.castShadow;
     this.shipHull.visible = this.settings.outlines;
 
     const r = this.renderer;

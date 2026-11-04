@@ -181,7 +181,7 @@ export function renderPortraits(renderer) {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.rotation.y = Math.PI * 0.72;
     scene.add(mesh);
-    const span = cls.model.length * 0.62;
+    const span = cls.model.length * 0.47;
     const aspect = 1.7;
     const cam = new THREE.OrthographicCamera(-span * aspect, span * aspect, span, -span, 0.1, 200);
     cam.position.set(30, 22, 30);

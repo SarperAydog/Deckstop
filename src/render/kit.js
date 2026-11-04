@@ -71,7 +71,7 @@ export function gable(w, h, d, color) {
 
 // A boulder: a crumpled icosahedron, its upward faces under snow.
 export function rock(r, seed, stone = '#8d9aaa', snow = '#eef2f5') {
-  const g = new THREE.IcosahedronGeometry(r, 0);
+  const g = new THREE.IcosahedronGeometry(r, r > 1.15 ? 1 : 0);
   const pos = g.attributes.position;
   const seen = new Map();
   let rs = seed * 9301 + 49297;
@@ -93,7 +93,9 @@ export function rock(r, seed, stone = '#8d9aaa', snow = '#eef2f5') {
   const nor = g.attributes.normal;
   for (let i = 0; i < pos.count; i += 3) {
     const c = nor.getY(i) > 0.62 ? b : a;
-    const v = 0.94 + rnd() * 0.12;
+    // Darker towards the base, where the weather has not bleached it.
+    const low = c === a ? 0.86 + Math.min(0.2, (pos.getY(i) / r + 0.6) * 0.2) : 1;
+    const v = (0.92 + rnd() * 0.16) * low;
     for (let j = 0; j < 3; j++) {
       col[(i + j) * 3] = c.r * v;
       col[(i + j) * 3 + 1] = c.g * v;
@@ -102,6 +104,45 @@ export function rock(r, seed, stone = '#8d9aaa', snow = '#eef2f5') {
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   return g;
+}
+
+// A cone whose tip fades up to a second colour: snow caught on a tree's branches.
+export function frostCone(r, h, seg, color, tip) {
+  const g = cone(r, h, seg, color);
+  const pos = g.attributes.position;
+  const col = g.attributes.color;
+  const top = new THREE.Color(tip);
+  for (let i = 0; i < pos.count; i++) {
+    const t = (pos.getY(i) + h / 2) / h;
+    if (t > 0.5) col.setXYZ(i, top.r, top.g, top.b);
+  }
+  return g;
+}
+
+// Sorts parts into square cells of the world and merges each cell, so that whole
+// districts can be skipped when they are off screen.
+export function mergeChunks(parts, size = 70) {
+  const cells = new Map();
+  for (const g of parts) {
+    const pos = g.attributes.position;
+    let x = 0;
+    let z = 0;
+    const step = Math.max(1, Math.floor(pos.count / 6));
+    let n = 0;
+    for (let i = 0; i < pos.count; i += step) {
+      x += pos.getX(i);
+      z += pos.getZ(i);
+      n++;
+    }
+    const key = `${Math.floor(x / n / size)},${Math.floor(z / n / size)}`;
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push(g);
+  }
+  return [...cells.values()].map((list) => {
+    const m = mergeGeometries(list, false);
+    m.computeBoundingSphere();
+    return m;
+  });
 }
 
 export function merged(parts) {

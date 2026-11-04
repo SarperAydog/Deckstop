@@ -23,7 +23,9 @@ function speedDial() {
     ticks += `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke-width="${i % 5 === 0 ? 1.6 : 0.9}"/>`;
   }
   return `<svg class="dial" viewBox="0 0 100 74">
+    <circle cx="50" cy="52" r="44" class="bezel"/>
     <path d="M13.3 65.3 A39 39 0 1 1 86.7 65.3" fill="none" class="arc"/>
+    <path d="M71.5 19.5 A39 39 0 0 1 86.7 65.3" fill="none" class="redline"/>
     <g class="ticks">${ticks}</g>
     <g data-needle><path d="M50 56 L48.6 52 L50 19 L51.4 52 Z" class="needle"/></g>
     <circle cx="50" cy="52" r="3.1" class="hub"/>
@@ -72,6 +74,8 @@ function compass() {
     t += `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke-width="${big ? 1.6 : 0.8}"/>`;
   }
   return `<svg class="compass" viewBox="0 0 100 100">
+    <circle cx="50" cy="50" r="48" class="bezel"/>
+    <circle cx="50" cy="50" r="33" class="dialface"/>
     <g data-rose>
       <g class="ticks">${t}</g>
       <text x="50" y="27" class="north">N</text>
