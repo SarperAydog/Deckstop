@@ -4,7 +4,7 @@ import { buildTerrainGeometry, Floes, terrainMaterial } from './terrain.js';
 import { buildTown, relightTrees } from './town.js';
 import { buildWater, waveState } from './water.js';
 import { buildShip, BuoyField, updateShip, makeBoatMaterial } from './ship.js';
-import { Flecks, Gulls, Rain, Snow, Wake } from './fx.js';
+import { Flecks, Gulls, Rain, ShipWake, Snow, Wake } from './fx.js';
 import { box, cyl, merged, place } from './kit.js';
 import { hullUniforms, mirrorMaterial, mistUniforms, outlineMaterial, stylize, voxUniforms } from './mist.js';
 import { VoxelField } from './voxels.js';
@@ -136,7 +136,15 @@ export class View {
       this.scene,
       world,
       stylize(new THREE.MeshLambertMaterial({ vertexColors: true })),
-      stylize(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })),
+      stylize(
+        new THREE.MeshLambertMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          blending: THREE.CustomBlending,
+          blendSrc: THREE.SrcAlphaFactor,
+          blendDst: THREE.OneMinusSrcAlphaFactor,
+        }),
+      ),
       (x, z, r) => {
         this.flecks.splash(x, z, Math.round(3 + r), 0.9);
         this.onIceBreak?.(r);
@@ -156,6 +164,7 @@ export class View {
     this.buoys = new BuoyField(this.scene);
     this.flecks = new Flecks(this.scene);
     this.wake = new Wake(this.flecks);
+    this.shipWake = new ShipWake(this.scene);
     this.rain = new Rain(this.scene);
     this.snow = new Snow(this.scene);
     this.gulls = new Gulls(this.scene, stylize(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })));
@@ -309,12 +318,15 @@ export class View {
 
     const u = this.water.uniforms;
     u.uTime.value = t;
-    u.uOrigin.value.set(this.focus.x, this.focus.z);
+    // Snapped to the mesh's own grid, so its vertices do not swim through the waves
+    // as the camera follows the ship.
     u.uScale.value = reach * 3.4;
-    // Hulls always feel a faint swell. The water mesh itself only moves in a storm.
-    u.uWave.value = w.storm * 0.26;
+    const meshCell = u.uScale.value / 160;
+    u.uOrigin.value.set(Math.round(this.focus.x / meshCell) * meshCell, Math.round(this.focus.z / meshCell) * meshCell);
+    // The water mesh really moves, a little, and hulls ride that very surface.
+    u.uWave.value = 0.1 + w.storm * 0.25;
     waveState.geo = u.uWave.value;
-    waveState.amp = 0.09 + w.storm * 0.26;
+    waveState.amp = u.uWave.value;
     u.uStorm.value = w.storm;
     u.uRain.value = Math.max(w.storm, w.overcast * 0.12);
     u.uHull.value.set(shipRoot.userData.length * 0.54, shipRoot.userData.beam * 0.62);
@@ -325,7 +337,7 @@ export class View {
     u.uRadarR.value = game.radarRange;
 
     this.buoys.update(game, t);
-    this.wake.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, dt, shipRoot.userData.length);
+    this.shipWake.update(dt, shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, game.topSpeed);
     this.floes.update(shipRoot.position.x, shipRoot.position.z, shipRoot.rotation.y, sp, shipRoot.userData.length, shipRoot.userData.beam, dt, t);
     this.gulls.update(t, dt, -2, -6, shipRoot.position.x, shipRoot.position.z);
     this.flecks.update(dt);

@@ -156,65 +156,32 @@ export class MapPanel {
   }
 
   // ---- coordinates ----------------------------------------------------------
-  // The chart turns with the camera, so land, sea and north sit where they do on screen.
-  // At zoom 1 the whole world fits as a tilted square inside the frame.
+  // North is always straight up. The frame is a square that fits the charted sea
+  // exactly, edge to edge, with the mainland along the bottom.
   get pxPerUnit() {
-    return (S * this.zoom) / (this.world.size * Math.SQRT2);
+    return (S * this.zoom) / this.world.size;
   }
-  // The game happens at sea, so the chart frames the water: where it lies comes from
-  // the map itself, ignoring the odd far-off bay. Land is only a corner of the frame.
   get seaFrame() {
-    if (this.frame) return this.frame;
-    const { world } = this;
-    const xs = [];
-    const zs = [];
-    for (let gz = 0; gz < world.n; gz += 8) {
-      for (let gx = 0; gx < world.n; gx += 8) {
-        if (world.mask[gz * world.n + gx]) continue;
-        xs.push(gx * world.cell - world.half);
-        zs.push(gz * world.cell - world.half);
-      }
-    }
-    xs.sort((a, b) => a - b);
-    zs.sort((a, b) => a - b);
-    const pick = (arr, q) => arr[Math.floor((arr.length - 1) * q)];
-    const x0 = pick(xs, 0.02);
-    const x1 = pick(xs, 0.98);
-    const z0 = pick(zs, 0.02);
-    const z1 = pick(zs, 0.98);
-    // At the chart's tilt, a W by D block of sea spans (W + D) / sqrt(2) across.
-    const across = (x1 - x0 + (z1 - z0)) * Math.SQRT1_2;
-    this.frame = {
-      x: (x0 + x1) / 2,
-      // Nudged north, which slides the land further into the lower-left corner.
-      z: (z0 + z1) / 2 - 42,
-      zoom: Math.max(1, (world.size * Math.SQRT2) / across),
-    };
-    return this.frame;
+    return { x: 0, z: this.world.bounds.z0 - 5 + this.world.size / 2, zoom: 1 };
   }
   clampView() {
     const f = this.seaFrame;
-    this.zoom = Math.max(f.zoom, Math.min(f.zoom * 4, this.zoom));
-    const lim = this.world.half * 1.2 * (1 - f.zoom / this.zoom);
+    this.zoom = Math.max(f.zoom, Math.min(f.zoom * 5, this.zoom));
+    const lim = (this.world.size / 2) * (1 - 1 / this.zoom);
     this.cx = Math.max(f.x - lim, Math.min(f.x + lim, this.cx));
     this.cz = Math.max(f.z - lim, Math.min(f.z + lim, this.cz));
   }
   toPx(x, z) {
     const k = this.pxPerUnit;
-    const c = Math.cos(this.view.yaw);
-    const s = Math.sin(this.view.yaw);
-    const dx = x - this.cx;
-    const dz = z - this.cz;
-    return [(dx * c - dz * s) * k + S / 2, (dx * s + dz * c) * k + S / 2];
+    return [(x - this.cx) * k + S / 2, (z - this.cz) * k + S / 2];
   }
   toWorld(e) {
     const r = this.canvas.getBoundingClientRect();
     const k = this.pxPerUnit;
-    const c = Math.cos(this.view.yaw);
-    const s = Math.sin(this.view.yaw);
-    const px = (((e.clientX - r.left) / r.width) * S - S / 2) / k;
-    const py = (((e.clientY - r.top) / r.height) * S - S / 2) / k;
-    return { x: px * c + py * s + this.cx, z: -px * s + py * c + this.cz };
+    return {
+      x: (((e.clientX - r.left) / r.width) * S - S / 2) / k + this.cx,
+      z: (((e.clientY - r.top) / r.height) * S - S / 2) / k + this.cz,
+    };
   }
   onWheel(e) {
     e.preventDefault();
@@ -333,14 +300,12 @@ export class MapPanel {
     const s = game.s;
     const g = this.ctx;
     const k = this.pxPerUnit;
-    const yaw = this.view.yaw;
     g.imageSmoothingEnabled = true;
     g.fillStyle = '#7ab1b9';
     g.fillRect(0, 0, S, S);
     g.imageSmoothingQuality = 'high';
     g.save();
     g.translate(S / 2, S / 2);
-    g.rotate(yaw);
     g.scale(k / BASE.px, k / BASE.px);
     g.drawImage(this.base, (BASE.x0 - this.cx) * BASE.px, (BASE.z0 - this.cz) * BASE.px);
     g.restore();
@@ -356,19 +321,6 @@ export class MapPanel {
     g.closePath();
     g.stroke();
     g.setLineDash([]);
-
-    // Loose ice big enough to matter. It drifts and breaks, so it is drawn live.
-    g.fillStyle = '#f7fbfc';
-    g.strokeStyle = 'rgba(70, 110, 125, 0.7)';
-    for (const f of this.view.floes.items) {
-      if (!f.alive || f.r < 1.5) continue;
-      const [fx, fy] = this.toPx(f.x, f.z);
-      if (fx < -8 || fy < -8 || fx > S + 8 || fy > S + 8) continue;
-      g.beginPath();
-      g.arc(fx, fy, Math.max(1.6, f.r * k), 0, 6.3);
-      g.fill();
-      g.stroke();
-    }
 
     // Town and pier.
     const [tx, tz] = this.toPx(0, 14);
@@ -468,8 +420,8 @@ export class MapPanel {
     g.beginPath();
     g.arc(sx, sy, game.radarRange * k, 0, 6.3);
     g.stroke();
-    const hx = Math.sin(s.ship.heading - yaw);
-    const hz = Math.cos(s.ship.heading - yaw);
+    const hx = Math.sin(s.ship.heading);
+    const hz = Math.cos(s.ship.heading);
     g.fillStyle = '#26343c';
     g.beginPath();
     g.moveTo(sx + hx * 12, sy + hz * 12);
@@ -480,7 +432,7 @@ export class MapPanel {
 
     // Compass rose: its N is the same direction as N on the bridge compass.
     const rx = S - 58;
-    const ry = 58;
+    const ry = 66;
     g.save();
     g.translate(rx, ry);
     g.fillStyle = 'rgba(251, 252, 252, 0.9)';
@@ -490,7 +442,6 @@ export class MapPanel {
     g.strokeStyle = '#26343c';
     g.lineWidth = 1;
     g.stroke();
-    g.rotate(yaw);
     for (let i = 0; i < 4; i++) {
       g.rotate(Math.PI / 2);
       g.fillStyle = '#26343c';
@@ -509,12 +460,10 @@ export class MapPanel {
     g.closePath();
     g.fill();
     g.restore();
-    const nx = rx + Math.sin(yaw) * 46;
-    const ny = ry - Math.cos(yaw) * 46;
     g.fillStyle = '#b5362e';
     g.font = "500 15px 'Alegreya SC', Georgia, serif";
     g.textAlign = 'center';
-    g.fillText('N', Math.min(S - 8, nx), Math.max(14, ny + 5));
+    g.fillText('N', rx, ry - 42);
 
     // Scale bar.
     const bar = 100 * k;

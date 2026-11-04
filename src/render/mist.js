@@ -63,6 +63,7 @@ export function stylize(material, extra = {}) {
     Object.assign(shader.uniforms, mistUniforms, voxUniforms, extra.uniforms ?? {});
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${VERT_HEAD}\n${extra.vert ?? ''}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${extra.vertBegin ?? ''}`)
       .replace('#include <project_vertex>', `#include <project_vertex>\n${VERT_BODY}\n${extra.vertBody ?? ''}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${FRAG_HEAD}\n${extra.frag ?? ''}`)

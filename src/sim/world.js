@@ -111,19 +111,37 @@ function distSegment(x, z, ax, az, bx, bz) {
 // Town footprint: everything inside is levelled for building on.
 export const TOWN = { x0: -34, x1: 42, z0: -9, z1: 42 };
 
+// Where the coast runs: x, then z. It climbs north up the west side, passes the town,
+// and falls away south just east of it, so land only holds the south-west corner.
+const COAST = [
+  [-360, -420], [-320, -325], [-280, -250], [-240, -155], [-200, -100], [-160, -60], [-110, -28], [-70, -9], [-44, -3],
+  [42, -3], [62, 3], [90, 34], [130, 90], [190, 170], [260, 260], [360, 400],
+];
+
+function coastLine(x) {
+  if (x <= COAST[0][0]) return COAST[0][1];
+  for (let i = 0; i < COAST.length - 1; i++) {
+    const [x0, z0] = COAST[i];
+    const [x1, z1] = COAST[i + 1];
+    if (x > x1) continue;
+    // Catmull-Rom through the neighbours keeps the coast free of corners.
+    const zp = COAST[Math.max(0, i - 1)][1];
+    const zn = COAST[Math.min(COAST.length - 1, i + 2)][1];
+    const t = (x - x0) / (x1 - x0);
+    return 0.5 * (2 * z0 + (z1 - zp) * t + (2 * zp - 5 * z0 + 4 * z1 - zn) * t * t + (3 * z0 - zp - 3 * z1 + zn) * t * t * t);
+  }
+  return COAST[COAST.length - 1][1];
+}
+
 // Signed "how far inland" field for the mainland. The sea lies towards -Z, so from
 // the default camera the coast runs across the screen with land at the lower left.
 function landField(x, z, seed) {
   const far = sstep(58, 150, Math.abs(x));
-  const swing = (fbm(x * 0.0075 + 5.1, 3.3, seed + 11, 3) - 0.5) * 210;
   const ripple = (fbm(x * 0.031, 8.7, seed + 13, 2) - 0.5) * 12;
   // A cove on the west side of the harbour, sheltered by the breakwater.
   const cove = 7 * sstep(-9, -19, x) * sstep(-44, -30, x);
-  const coast = -3 + cove + ripple * (0.25 + far * 0.75) + swing * far;
-  let f = z - coast + (fbm(x * 0.021 + 3, z * 0.021 - 2, seed + 17, 3) - 0.5) * 78 * far;
-  // The mainland wraps round the west of the fishing grounds.
-  // It tapers off before the northern edge of the ground mesh.
-  f = Math.max(f, -x - 262 - sstep(-190, -285, z) * 130 + (fbm(z * 0.016, 1.5, seed + 19, 3) - 0.5) * 90);
+  const coast = coastLine(x) + cove + ripple * (0.25 + far * 0.75);
+  let f = z - coast + (fbm(x * 0.021 + 3, z * 0.021 - 2, seed + 17, 3) - 0.5) * 46 * far;
   // Lighthouse point, east of town.
   f = Math.max(f, 7.5 - Math.hypot((x - 27) * 0.8, z + 6.5));
   return f;
@@ -320,7 +338,7 @@ export function generateWorld(seed) {
     navDistance,
     heightAt,
     // Where the ship may sail. North of the mesh there is only open sea.
-    bounds: { x0: -half + 6, x1: half - 6, z0: -630, z1: half - 6 },
+    bounds: { x0: -half + 6, x1: half - 6, z0: -595, z1: 34 },
     port,
   };
 }

@@ -630,7 +630,7 @@ export class Hud {
   update() {
     const g = this.game;
     const s = g.s;
-    this.dash.update(g, this.view.yaw);
+    this.dash.update(g, 0); // N stays up, the same as on the chart
     const purse = `$${Math.round(s.money)}`;
     const purseEl = this.$('.purse');
     if (purseEl.textContent !== purse) purseEl.textContent = purse;

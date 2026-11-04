@@ -261,9 +261,9 @@ export function updateShip(root, game, time, dt) {
   u.rideY = (u.rideY ?? want) + (want - (u.rideY ?? want)) * follow;
   u.ridePitch = (u.ridePitch ?? 0) + (Math.atan2(bow - stern, lever * 2) - (u.ridePitch ?? 0)) * follow;
   u.rideRoll = (u.rideRoll ?? 0) + (Math.atan2(right - left, side * 2) - (u.rideRoll ?? 0)) * follow;
-  tilt.position.y = u.rideY;
-  tilt.rotation.z = u.rideRoll * 0.8 - ship.rudder * Math.min(1, Math.abs(ship.speed) / 6) * 0.05;
-  tilt.rotation.x = -u.ridePitch - Math.min(0.03, Math.max(0, ship.speed) * 0.005);
+  tilt.position.y = u.rideY * 1.5;
+  tilt.rotation.z = u.rideRoll * 2.2 - ship.rudder * Math.min(1, Math.abs(ship.speed) / 6) * 0.05;
+  tilt.rotation.x = -u.ridePitch * 2 - Math.min(0.03, Math.max(0, ship.speed) * 0.005);
 
   cages.count = Math.min(24, game.cagesAboard);
   deckhand.visible = s.crew.deckhand;

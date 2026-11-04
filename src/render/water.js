@@ -192,10 +192,16 @@ const FRAG = /* glsl */ `
     float shoreFoam = sheetZone * born * smoothstep(eaten - 0.04, eaten + 0.2, lace)
       * (1.0 - smoothstep(0.5, 0.92, age)) * exposure;
 
-    // In the wake of every wave: a very faint, patchy trail that soon thins out. It
-    // stays barely there at sea and strengthens a little as the water shoals.
-    float trailCut = mix(0.6, 0.86, smoothstep(0.0, 0.26, age));
-    float trail = born * (1.0 - smoothstep(0.12, 0.3, age)) * smoothstep(trailCut, trailCut + 0.14, lace) * gaps * open
+    // In the wake of a wave. Near land it follows the crest. Out at sea each drifting
+    // patch of water keeps its own timing, and only some patches foam at all, so from
+    // high up there are scattered flecks and no lines to read.
+    float scatterPhase = (noise(w * 0.021 + 7.0) * 3.0 + noise(w * 0.058 - 3.0) * 1.6 + noise(w * 0.16 + 1.5) * 0.7) * 6.28318;
+    float offshore = 1.0 - shoal * exposure;
+    float trailAge = mod(wrapped + scatterPhase * offshore, 6.28318) / 6.28318;
+    float patches = mix(1.0, smoothstep(0.5, 0.72, noise(w * 0.034 + vec2(uTime * 0.012, 21.0))) * smoothstep(0.34, 0.6, noise(w * 0.11 + vec2(-5.0, uTime * 0.02))), offshore);
+    float trailBorn = smoothstep(0.0, 0.05, trailAge);
+    float trailCut = mix(0.6, 0.86, smoothstep(0.0, 0.26, trailAge));
+    float trail = trailBorn * (1.0 - smoothstep(0.12, 0.3, trailAge)) * smoothstep(trailCut, trailCut + 0.14, lace) * patches * gaps * open
       * mix(0.14, 0.42, shoal * exposure);
 
     float near = step(0.001, d);
